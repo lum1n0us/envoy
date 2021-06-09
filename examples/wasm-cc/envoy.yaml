@@ -32,16 +32,24 @@ static_resources:
                 root_id: "my_root_id"
                 # if your wasm filter requires custom configuration you can add
                 # as follows
+                # proxy_on_configuration
                 configuration:
                   "@type": "type.googleapis.com/google.protobuf.StringValue"
                   value: |
-                    {}
+                    SecRuleEngine On
+                    SecRule ARGS:param1 "test" "id:1,phase:1,log,status:400,msg:'Test rule'"
                 vm_config:
                   runtime: "envoy.wasm.runtime.v8"
                   vm_id: "my_vm_id"
+                  # proxy_on_start
+                  configuration:
+                    "@type": "type.googleapis.com/google.protobuf.StringValue"
+                    value: |
+                      SecRuleEngine On
+                      SecRule ARGS:param1 "test" "id:1,phase:1,log,status:400,msg:'Test rule'"
                   code:
                     local:
-                      filename: "lib/envoy_filter_http_wasm_example.wasm"
+                      filename: "lib/envoy_filter_http_wasm_modsecurity.wasm"
           - name: envoy.filters.http.router
             typed_config: {}
 
