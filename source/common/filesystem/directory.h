@@ -4,7 +4,7 @@
 
 #include "envoy/filesystem/filesystem.h"
 
-#include "common/filesystem/directory_iterator_impl.h"
+#include "source/common/filesystem/directory_iterator_impl.h"
 
 namespace Envoy {
 namespace Filesystem {
@@ -14,9 +14,9 @@ class Directory {
 public:
   Directory(const std::string& directory_path) : directory_path_(directory_path) {}
 
-  DirectoryIteratorImpl begin() { return DirectoryIteratorImpl(directory_path_); }
+  DirectoryIteratorImpl begin() { return {directory_path_}; }
 
-  DirectoryIteratorImpl end() { return DirectoryIteratorImpl(); }
+  DirectoryIteratorImpl end() { return {}; }
 
 private:
   const std::string directory_path_;

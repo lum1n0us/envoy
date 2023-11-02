@@ -1,8 +1,8 @@
-#include "extensions/filters/http/grpc_web/config.h"
+#include "source/extensions/filters/http/grpc_web/config.h"
 
 #include "envoy/registry/registry.h"
 
-#include "extensions/filters/http/grpc_web/grpc_web_filter.h"
+#include "source/extensions/filters/http/grpc_web/grpc_web_filter.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -20,8 +20,8 @@ Http::FilterFactoryCb GrpcWebFilterConfig::createFilterFactoryFromProtoTyped(
 /**
  * Static registration for the gRPC-Web filter. @see RegisterFactory.
  */
-REGISTER_FACTORY(GrpcWebFilterConfig,
-                 Server::Configuration::NamedHttpFilterConfigFactory){"envoy.grpc_web"};
+LEGACY_REGISTER_FACTORY(GrpcWebFilterConfig, Server::Configuration::NamedHttpFilterConfigFactory,
+                        "envoy.grpc_web");
 
 } // namespace GrpcWeb
 } // namespace HttpFilters

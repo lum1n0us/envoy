@@ -18,7 +18,8 @@ import tempfile
 curr_dir = os.path.dirname(os.path.realpath(__file__))
 tools = os.path.dirname(curr_dir)
 src = os.path.join(tools, 'testdata', 'check_format')
-check_format = sys.executable + " " + os.path.join(curr_dir, 'check_format.py')
+check_format = f"{sys.executable}  {os.path.join(curr_dir, 'check_format.py')}"
+check_format_config = f"{os.path.join(curr_dir, 'config.yaml')}"
 errors = 0
 
 
@@ -26,7 +27,7 @@ errors = 0
 # the comamnd run and the status code as well as the stdout, and returning
 # all of that to the caller.
 def run_check_format(operation, filename):
-    command = check_format + " " + operation + " " + filename
+    command = f"{check_format} {operation} {filename} --config_path={check_format_config}"
     status, stdout, stderr = run_command(command)
     return (command, status, stdout + stderr)
 
@@ -121,7 +122,7 @@ def check_tool_not_found_error():
     # Temporarily change PATH to test the error about lack of external tools.
     oldPath = os.environ["PATH"]
     os.environ["PATH"] = "/sbin:/usr/sbin"
-    clang_format = os.getenv("CLANG_FORMAT", "clang-format-9")
+    clang_format = os.getenv("CLANG_FORMAT", "clang-format")
     # If CLANG_FORMAT points directly to the binary, skip this test.
     if os.path.isfile(clang_format) and os.access(clang_format, os.X_OK):
         os.environ["PATH"] = oldPath
@@ -163,7 +164,7 @@ def run_checks():
     errors += check_unfixable_error("shared_mutex.cc", "shared_mutex")
     errors += check_unfixable_error("shared_mutex.cc", "shared_mutex")
     real_time_inject_error = (
-        "Don't reference real-world time sources from production code; use injection")
+        "Don't reference real-world time sources; use TimeSystem::advanceTime(Wait|Async)")
     errors += check_unfixable_error("real_time_source.cc", real_time_inject_error)
     errors += check_unfixable_error("real_time_system.cc", real_time_inject_error)
     errors += check_unfixable_error(
@@ -173,8 +174,9 @@ def run_checks():
     errors += check_unfixable_error("system_clock.cc", real_time_inject_error)
     errors += check_unfixable_error("steady_clock.cc", real_time_inject_error)
     errors += check_unfixable_error(
-        "unpack_to.cc", "Don't use UnpackTo() directly, use MessageUtil::unpackTo() instead")
-    errors += check_unfixable_error("condvar_wait_for.cc", real_time_inject_error)
+        "unpack_to.cc", "Don't use UnpackTo() directly, use MessageUtil::unpackToNoThrow() instead")
+    errors += check_unfixable_error(
+        "condvar_wait_for.cc", "Don't use CondVar::waitFor(); use TimeSystem::waitFor() instead.")
     errors += check_unfixable_error("sleep.cc", real_time_inject_error)
     errors += check_unfixable_error("std_atomic_free_functions.cc", "std::atomic_*")
     errors += check_unfixable_error("std_get_time.cc", "std::get_time")
@@ -194,17 +196,6 @@ def run_checks():
     errors += check_unfixable_error(
         "serialize_as_string.cc",
         "Don't use MessageLite::SerializeAsString for generating deterministic serialization")
-    errors += check_unfixable_error(
-        "version_history/current.rst",
-        "Version history not in alphabetical order (zzzzz vs aaaaa): please check placement of line"
-    )
-    errors += check_unfixable_error(
-        "version_history/current.rst",
-        "Version history not in alphabetical order (this vs aaaa): please check placement of line")
-    errors += check_unfixable_error(
-        "version_history/current.rst",
-        "Version history line malformed. Does not match VERSION_HISTORY_NEW_LINE_REGEX in "
-        "check_format.py")
     errors += check_unfixable_error(
         "counter_from_string.cc",
         "Don't lookup stats by name at runtime; use StatName saved during construction")
@@ -231,9 +222,6 @@ def run_checks():
     errors += check_unfixable_error("clang_format_double_off.cc", "clang-format nested off")
     errors += check_unfixable_error("clang_format_trailing_off.cc", "clang-format remains off")
     errors += check_unfixable_error("clang_format_double_on.cc", "clang-format nested on")
-    errors += fix_file_expecting_failure(
-        "api/missing_package.proto",
-        "Unable to find package name for proto file: ./api/missing_package.proto")
     errors += check_unfixable_error(
         "proto_enum_mangling.cc", "Don't use mangled Protobuf names for enum constants")
     errors += check_unfixable_error(
@@ -265,13 +253,13 @@ def run_checks():
     errors += check_unfixable_error(
         "std_optional.cc", "Don't use std::optional; use absl::optional instead")
     errors += check_unfixable_error(
-        "std_string_view.cc", "Don't use std::string_view; use absl::string_view instead")
+        "std_string_view.cc",
+        "Don't use std::string_view or toStdStringView; use absl::string_view instead")
     errors += check_unfixable_error(
         "std_variant.cc", "Don't use std::variant; use absl::variant instead")
     errors += check_unfixable_error("std_visit.cc", "Don't use std::visit; use absl::visit instead")
     errors += check_unfixable_error(
         "throw.cc", "Don't introduce throws into exception-free files, use error statuses instead.")
-    errors += check_unfixable_error("pgv_string.proto", "min_bytes is DEPRECATED, Use min_len.")
     errors += check_file_expecting_ok("commented_throw.cc")
     errors += check_unfixable_error(
         "repository_url.bzl", "Only repository_locations.bzl may contains URL references")
@@ -317,6 +305,9 @@ def run_checks():
         "term absl::make_unique< should be replaced with standard library term std::make_unique<")
     errors += check_and_fix_error(
         "code_conventions.cc", "term .Times(1); should be replaced with preferred term ;")
+    errors += check_and_fix_error(
+        "code_conventions.cc",
+        "term Stats::ScopePtr should be replaced with preferred term Stats::ScopeSharedPtr")
 
     errors += check_file_expecting_ok("real_time_source_override.cc")
     errors += check_file_expecting_ok("duration_value_zero.cc")

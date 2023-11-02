@@ -1,4 +1,4 @@
-#include "common/event/scaled_range_timer_manager_impl.h"
+#include "source/common/event/scaled_range_timer_manager_impl.h"
 
 #include <chrono>
 #include <cmath>
@@ -6,8 +6,8 @@
 
 #include "envoy/event/timer.h"
 
-#include "common/common/assert.h"
-#include "common/common/scope_tracker.h"
+#include "source/common/common/assert.h"
+#include "source/common/common/scope_tracker.h"
 
 namespace Envoy {
 namespace Event {
@@ -214,7 +214,7 @@ ScaledRangeTimerManagerImpl::activateTimer(std::chrono::milliseconds duration,
     resetQueueTimer(queue, dispatcher_.approximateMonotonicTime());
   }
 
-  return ScalingTimerHandle(queue, --queue.range_timers_.end());
+  return {queue, --queue.range_timers_.end()};
 }
 
 void ScaledRangeTimerManagerImpl::removeTimer(ScalingTimerHandle handle) {

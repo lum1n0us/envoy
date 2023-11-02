@@ -1,4 +1,4 @@
-#include "server/options_impl.h"
+#include "source/server/options_impl.h"
 
 #include <chrono>
 #include <cstdint>
@@ -7,13 +7,13 @@
 
 #include "envoy/admin/v3/server_info.pb.h"
 
-#include "common/common/fmt.h"
-#include "common/common/logger.h"
-#include "common/common/macros.h"
-#include "common/protobuf/utility.h"
-#include "common/version/version.h"
-
-#include "server/options_impl_platform.h"
+#include "source/common/common/fmt.h"
+#include "source/common/common/logger.h"
+#include "source/common/common/macros.h"
+#include "source/common/protobuf/utility.h"
+#include "source/common/stats/tag_utility.h"
+#include "source/common/version/version.h"
+#include "source/server/options_impl_platform.h"
 
 #include "absl/strings/str_replace.h"
 #include "absl/strings/str_split.h"
@@ -32,6 +32,11 @@ std::vector<std::string> toArgsVector(int argc, const char* const* argv) {
   }
   return args;
 }
+
+void throwMalformedArgExceptionOrPanic(std::string message) {
+  throwExceptionOrPanic(MalformedArgvException, message);
+}
+
 } // namespace
 
 OptionsImpl::OptionsImpl(int argc, const char* const* argv,
@@ -41,31 +46,31 @@ OptionsImpl::OptionsImpl(int argc, const char* const* argv,
 
 OptionsImpl::OptionsImpl(std::vector<std::string> args,
                          const HotRestartVersionCb& hot_restart_version_cb,
-                         spdlog::level::level_enum default_log_level)
-    : signal_handling_enabled_(true) {
+                         spdlog::level::level_enum default_log_level) {
   std::string log_levels_string = fmt::format("Log levels: {}", allowedLogLevels());
   log_levels_string +=
       fmt::format("\nDefault is [{}]", spdlog::level::level_string_views[default_log_level]);
 
   const std::string component_log_level_string =
-      "Comma separated list of component log levels. For example upstream:debug,config:trace";
+      "Comma-separated list of component log levels. For example upstream:debug,config:trace";
   const std::string log_format_string =
       fmt::format("Log message format in spdlog syntax "
                   "(see https://github.com/gabime/spdlog/wiki/3.-Custom-formatting)"
                   "\nDefault is \"{}\"",
                   Logger::Logger::DEFAULT_LOG_FORMAT);
 
+  // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
   TCLAP::CmdLine cmd("envoy", ' ', VersionInfo::version());
   TCLAP::ValueArg<uint32_t> base_id(
-      "", "base-id", "base ID so that multiple envoys can run on the same host if needed", false, 0,
+      "", "base-id", "Base ID so that multiple envoys can run on the same host if needed", false, 0,
       "uint32_t", cmd);
   TCLAP::SwitchArg use_dynamic_base_id(
       "", "use-dynamic-base-id",
-      "the server chooses a base ID dynamically. Supersedes a static base ID. May not be used "
+      "The server chooses a base ID dynamically. Supersedes a static base ID. May not be used "
       "when the restart epoch is non-zero.",
       cmd, false);
   TCLAP::ValueArg<std::string> base_id_path(
-      "", "base-id-path", "path to which the base ID is written", false, "", "string", cmd);
+      "", "base-id-path", "Path to which the base ID is written", false, "", "string", cmd);
   TCLAP::ValueArg<uint32_t> concurrency("", "concurrency", "# of worker threads to run", false,
                                         std::thread::hardware_concurrency(), "uint32_t", cmd);
   TCLAP::ValueArg<std::string> config_path("c", "config-path", "Path to configuration file", false,
@@ -73,23 +78,18 @@ OptionsImpl::OptionsImpl(std::vector<std::string> args,
   TCLAP::ValueArg<std::string> config_yaml(
       "", "config-yaml", "Inline YAML configuration, merges with the contents of --config-path",
       false, "", "string", cmd);
-  TCLAP::ValueArg<uint32_t> bootstrap_version(
-      "", "bootstrap-version",
-      "API version to parse the bootstrap config as (e.g. 3). If "
-      "unset, all known versions will be attempted",
-      false, 0, "string", cmd);
 
   TCLAP::SwitchArg allow_unknown_fields("", "allow-unknown-fields",
-                                        "allow unknown fields in static configuration (DEPRECATED)",
+                                        "Allow unknown fields in static configuration (DEPRECATED)",
                                         cmd, false);
   TCLAP::SwitchArg allow_unknown_static_fields("", "allow-unknown-static-fields",
-                                               "allow unknown fields in static configuration", cmd,
+                                               "Allow unknown fields in static configuration", cmd,
                                                false);
   TCLAP::SwitchArg reject_unknown_dynamic_fields("", "reject-unknown-dynamic-fields",
-                                                 "reject unknown fields in dynamic configuration",
+                                                 "Reject unknown fields in dynamic configuration",
                                                  cmd, false);
   TCLAP::SwitchArg ignore_unknown_dynamic_fields("", "ignore-unknown-dynamic-fields",
-                                                 "ignore unknown fields in dynamic configuration",
+                                                 "Ignore unknown fields in dynamic configuration",
                                                  cmd, false);
 
   TCLAP::ValueArg<std::string> admin_address_path("", "admin-address-path", "Admin address path",
@@ -110,13 +110,13 @@ OptionsImpl::OptionsImpl(std::vector<std::string> args,
                                       cmd, false);
   TCLAP::SwitchArg enable_fine_grain_logging(
       "", "enable-fine-grain-logging",
-      "Logger mode: enable file level log control(Fancy Logger)or not", cmd, false);
+      "Logger mode: enable file level log control (Fine-Grain Logger) or not", cmd, false);
   TCLAP::ValueArg<std::string> log_path("", "log-path", "Path to logfile", false, "", "string",
                                         cmd);
-  TCLAP::ValueArg<uint32_t> restart_epoch("", "restart-epoch", "hot restart epoch #", false, 0,
+  TCLAP::ValueArg<uint32_t> restart_epoch("", "restart-epoch", "Hot restart epoch #", false, 0,
                                           "uint32_t", cmd);
   TCLAP::SwitchArg hot_restart_version_option("", "hot-restart-version",
-                                              "hot restart compatibility version", cmd);
+                                              "Hot restart compatibility version", cmd);
   TCLAP::ValueArg<std::string> service_cluster("", "service-cluster", "Cluster name", false, "",
                                                "string", cmd);
   TCLAP::ValueArg<std::string> service_node("", "service-node", "Node name", false, "", "string",
@@ -158,26 +158,34 @@ OptionsImpl::OptionsImpl(std::vector<std::string> args,
                                            "600", "string", cmd);
   TCLAP::SwitchArg enable_core_dump("", "enable-core-dump", "Enable core dumps", cmd, false);
 
+  TCLAP::MultiArg<std::string> stats_tag(
+      "", "stats-tag",
+      "This flag provides a universal tag for all stats generated by Envoy. The format is "
+      "``tag:value``. Only alphanumeric values are allowed for tag names. For tag values all "
+      "characters are permitted except for '.' (dot). This flag can be repeated multiple times to "
+      "set multiple universal tags. Multiple values for the same tag name are not allowed.",
+      false, "string", cmd);
+
   cmd.setExceptionHandling(false);
+
+  std::function failure_function = [&](TCLAP::ArgException& e) {
+    TRY_ASSERT_MAIN_THREAD { cmd.getOutput()->failure(cmd, e); }
+    END_TRY
+    CATCH(const TCLAP::ExitException&, {
+      // failure() has already written an informative message to stderr, so all that's left to do
+      // is throw our own exception with the original message.
+      throw MalformedArgvException(e.what());
+    });
+  };
+
   TRY_ASSERT_MAIN_THREAD {
     cmd.parse(args);
     count_ = cmd.getArgList().size();
   }
   END_TRY
-  catch (TCLAP::ArgException& e) {
-    TRY_ASSERT_MAIN_THREAD { cmd.getOutput()->failure(cmd, e); }
-    END_TRY
-    catch (const TCLAP::ExitException&) {
-      // failure() has already written an informative message to stderr, so all that's left to do
-      // is throw our own exception with the original message.
-      throw MalformedArgvException(e.what());
-    }
-  }
-  catch (const TCLAP::ExitException& e) {
-    // parse() throws an ExitException with status 0 after printing the output for --help and
-    // --version.
-    throw NoServingException();
-  }
+  MULTI_CATCH(
+      TCLAP::ArgException & e, { failure_function(e); },
+      { throw NoServingException("NoServingException"); });
 
   hot_restart_disabled_ = disable_hot_restart.getValue();
   mutex_tracing_enabled_ = enable_mutex_tracing.getValue();
@@ -192,6 +200,7 @@ OptionsImpl::OptionsImpl(std::vector<std::string> args,
   }
 
   log_format_ = log_format.getValue();
+  log_format_set_ = log_format.isSet();
   log_format_escaped_ = log_format_escaped.getValue();
   enable_fine_grain_logging_ = enable_fine_grain_logging.getValue();
 
@@ -205,7 +214,7 @@ OptionsImpl::OptionsImpl(std::vector<std::string> args,
     mode_ = Server::Mode::InitOnly;
   } else {
     const std::string message = fmt::format("error: unknown mode '{}'", mode.getValue());
-    throw MalformedArgvException(message);
+    throwMalformedArgExceptionOrPanic(message);
   }
 
   if (local_address_ip_version.getValue() == "v4") {
@@ -215,7 +224,7 @@ OptionsImpl::OptionsImpl(std::vector<std::string> args,
   } else {
     const std::string message =
         fmt::format("error: unknown IP address version '{}'", local_address_ip_version.getValue());
-    throw MalformedArgvException(message);
+    throwMalformedArgExceptionOrPanic(message);
   }
   base_id_ = base_id.getValue();
   use_dynamic_base_id_ = use_dynamic_base_id.getValue();
@@ -225,7 +234,7 @@ OptionsImpl::OptionsImpl(std::vector<std::string> args,
   if (use_dynamic_base_id_ && restart_epoch_ > 0) {
     const std::string message = fmt::format(
         "error: cannot use --restart-epoch={} with --use-dynamic-base-id", restart_epoch_);
-    throw MalformedArgvException(message);
+    throwMalformedArgExceptionOrPanic(message);
   }
 
   if (!concurrency.isSet() && cpuset_threads_) {
@@ -243,9 +252,6 @@ OptionsImpl::OptionsImpl(std::vector<std::string> args,
 
   config_path_ = config_path.getValue();
   config_yaml_ = config_yaml.getValue();
-  if (bootstrap_version.getValue() != 0) {
-    bootstrap_version_ = bootstrap_version.getValue();
-  }
   if (allow_unknown_fields.getValue()) {
     ENVOY_LOG(warn,
               "--allow-unknown-fields is deprecated, use --allow-unknown-static-fields instead.");
@@ -269,8 +275,8 @@ OptionsImpl::OptionsImpl(std::vector<std::string> args,
   } else {
     uint64_t socket_mode_helper;
     if (!StringUtil::atoull(socket_mode.getValue().c_str(), socket_mode_helper, 8)) {
-      throw MalformedArgvException(
-          fmt::format("error: invalid socket-mode '{}'", socket_mode.getValue()));
+      throwExceptionOrPanic(MalformedArgvException,
+                            fmt::format("error: invalid socket-mode '{}'", socket_mode.getValue()));
     }
     socket_mode_ = socket_mode_helper;
   }
@@ -280,17 +286,47 @@ OptionsImpl::OptionsImpl(std::vector<std::string> args,
   } else if (drain_strategy.getValue() == "gradual") {
     drain_strategy_ = Server::DrainStrategy::Gradual;
   } else {
-    throw MalformedArgvException(
-        fmt::format("error: unknown drain-strategy '{}'", mode.getValue()));
+    throwExceptionOrPanic(MalformedArgvException,
+                          fmt::format("error: unknown drain-strategy '{}'", mode.getValue()));
   }
 
   if (hot_restart_version_option.getValue()) {
     std::cerr << hot_restart_version_cb(!hot_restart_disabled_);
-    throw NoServingException();
+    throwExceptionOrPanic(NoServingException, "NoServingException");
   }
 
   if (!disable_extensions.getValue().empty()) {
     disabled_extensions_ = absl::StrSplit(disable_extensions.getValue(), ',');
+  }
+
+  if (!stats_tag.getValue().empty()) {
+    for (const auto& cli_tag_pair : stats_tag.getValue()) {
+
+      std::vector<absl::string_view> cli_tag_pair_tokens =
+          absl::StrSplit(cli_tag_pair, absl::MaxSplits(':', 1));
+      if (cli_tag_pair_tokens.size() != 2) {
+        throwExceptionOrPanic(MalformedArgvException,
+                              fmt::format("error: misformatted stats-tag '{}'", cli_tag_pair));
+      }
+
+      auto name = cli_tag_pair_tokens[0];
+      if (!Stats::TagUtility::isTagNameValid(name)) {
+        throwExceptionOrPanic(
+            MalformedArgvException,
+            fmt::format("error: misformatted stats-tag '{}' contains invalid char in '{}'",
+                        cli_tag_pair, name));
+      }
+
+      auto value = cli_tag_pair_tokens[1];
+      if (!Stats::TagUtility::isTagValueValid(value)) {
+        throwExceptionOrPanic(
+            MalformedArgvException,
+            fmt::format("error: misformatted stats-tag '{}' contains invalid char in '{}'",
+                        cli_tag_pair, value));
+      }
+
+      stats_tags_.emplace_back(Stats::Tag{std::string(name), std::string(value)});
+    }
   }
 }
 
@@ -349,7 +385,7 @@ void OptionsImpl::parseComponentLogLevels(const std::string& component_log_level
 
 uint32_t OptionsImpl::count() const { return count_; }
 
-void OptionsImpl::logError(const std::string& error) const { throw MalformedArgvException(error); }
+void OptionsImpl::logError(const std::string& error) { throwMalformedArgExceptionOrPanic(error); }
 
 Server::CommandLineOptionsPtr OptionsImpl::toCommandLineOptions() const {
   Server::CommandLineOptionsPtr command_line_options =
@@ -406,21 +442,16 @@ Server::CommandLineOptionsPtr OptionsImpl::toCommandLineOptions() const {
   }
   command_line_options->set_socket_path(socketPath());
   command_line_options->set_socket_mode(socketMode());
+  for (const auto& tag : statsTags()) {
+    command_line_options->add_stats_tag(fmt::format("{}:{}", tag.name_, tag.value_));
+  }
   return command_line_options;
 }
 
 OptionsImpl::OptionsImpl(const std::string& service_cluster, const std::string& service_node,
                          const std::string& service_zone, spdlog::level::level_enum log_level)
-    : base_id_(0u), use_dynamic_base_id_(false), base_id_path_(""), concurrency_(1u),
-      config_path_(""), config_yaml_(""),
-      local_address_ip_version_(Network::Address::IpVersion::v4), log_level_(log_level),
-      log_format_(Logger::Logger::DEFAULT_LOG_FORMAT), log_format_escaped_(false),
-      restart_epoch_(0u), service_cluster_(service_cluster), service_node_(service_node),
-      service_zone_(service_zone), file_flush_interval_msec_(10000), drain_time_(600),
-      parent_shutdown_time_(900), drain_strategy_(Server::DrainStrategy::Gradual),
-      mode_(Server::Mode::Serve), hot_restart_disabled_(false), signal_handling_enabled_(true),
-      mutex_tracing_enabled_(false), cpuset_threads_(false), socket_path_("@envoy_domain_socket"),
-      socket_mode_(0) {}
+    : log_level_(log_level), service_cluster_(service_cluster), service_node_(service_node),
+      service_zone_(service_zone) {}
 
 void OptionsImpl::disableExtensions(const std::vector<std::string>& names) {
   for (const auto& name : names) {

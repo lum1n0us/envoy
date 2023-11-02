@@ -9,8 +9,8 @@ void H2FuzzIntegrationTest::initialize() {
   const std::string prefix("/");
   const Http::Code status(Http::Code::OK);
 
-  setDownstreamProtocol(Http::CodecClient::Type::HTTP2);
-  setUpstreamProtocol(FakeHttpConnection::Type::HTTP2);
+  setDownstreamProtocol(Http::CodecType::HTTP2);
+  setUpstreamProtocol(Http::CodecType::HTTP2);
 
   config_helper_.addConfigModifier(
       [&body, &prefix](
@@ -36,7 +36,7 @@ void H2FuzzIntegrationTest::initialize() {
 DEFINE_PROTO_FUZZER(const test::integration::H2CaptureFuzzTestCase& input) {
   RELEASE_ASSERT(!TestEnvironment::getIpVersionsForTest().empty(), "");
   const auto ip_version = TestEnvironment::getIpVersionsForTest()[0];
-  PERSISTENT_FUZZ_VAR H2FuzzIntegrationTest h2_fuzz_integration_test(ip_version);
+  PERSISTENT_FUZZ_VAR(H2FuzzIntegrationTest, h2_fuzz_integration_test, (ip_version));
   h2_fuzz_integration_test.replay(input, true);
 }
 

@@ -26,13 +26,18 @@ mappers:
       header_filter:
         header:
           name: test-header
-          exact_match: exact-match-value
+          string_match:
+            exact: exact-match-value
     status_code: 550
     headers_to_add:
       - header:
           key: foo
           value: bar
-        append: false
+        append_action: OVERWRITE_IF_EXISTS_OR_ADD
+      - header:
+          key: content-type
+          value: "application/json-custom"
+        append_action: OVERWRITE_IF_EXISTS_OR_ADD
 body_format:
   json_format:
     level: TRACE
@@ -40,6 +45,7 @@ body_format:
     response_body: "%LOCAL_REPLY_BODY%"
   )EOF";
   setLocalReplyConfig(yaml);
+  config_helper_.addConfigModifier(configureProxyStatus());
   initialize();
 
   const std::string expected_body = R"({
@@ -54,7 +60,7 @@ body_format:
       Http::TestRequestHeaderMapImpl{{":method", "POST"},
                                      {":path", "/test/long/url"},
                                      {":scheme", "http"},
-                                     {":authority", "host"},
+                                     {":authority", "sni.lyft.com"},
                                      {"test-header", "exact-match-value"}});
   auto response = std::move(encoder_decoder.second);
 
@@ -64,9 +70,9 @@ body_format:
   ASSERT_TRUE(upstream_request_->waitForHeadersComplete());
   ASSERT_TRUE(fake_upstream_connection_->close());
   ASSERT_TRUE(fake_upstream_connection_->waitForDisconnect());
-  response->waitForEndStream();
+  ASSERT_TRUE(response->waitForEndStream());
 
-  if (downstream_protocol_ == Http::CodecClient::Type::HTTP1) {
+  if (downstream_protocol_ == Http::CodecType::HTTP1) {
     ASSERT_TRUE(codec_client_->waitForDisconnect());
   } else {
     codec_client_->close();
@@ -76,9 +82,12 @@ body_format:
   EXPECT_EQ(0U, upstream_request_->bodyLength());
 
   EXPECT_TRUE(response->complete());
-  EXPECT_EQ("application/json", response->headers().ContentType()->value().getStringView());
+  EXPECT_EQ("application/json-custom", response->headers().ContentType()->value().getStringView());
   EXPECT_EQ("150", response->headers().ContentLength()->value().getStringView());
   EXPECT_EQ("550", response->headers().Status()->value().getStringView());
+  EXPECT_EQ(response->headers().getProxyStatusValue(),
+            "envoy; error=connection_terminated; "
+            "details=\"upstream_reset_before_response_started{connection_termination}; UC\"");
   EXPECT_EQ("bar",
             response->headers().get(Http::LowerCaseString("foo"))[0]->value().getStringView());
   // Check if returned json is same as expected
@@ -92,7 +101,8 @@ mappers:
       header_filter:
         header:
           name: test-header
-          exact_match: exact-match-value
+          string_match:
+            exact: exact-match-value
     status_code: 550
 body_format:
   json_format:
@@ -113,7 +123,7 @@ body_format:
       Http::TestRequestHeaderMapImpl{{":method", "POST"},
                                      {":path", "/test/long/url"},
                                      {":scheme", "http"},
-                                     {":authority", "host"},
+                                     {":authority", "sni.lyft.com"},
                                      {"test-header", "exact-match-value"}});
   auto response = std::move(encoder_decoder.second);
 
@@ -123,9 +133,9 @@ body_format:
   ASSERT_TRUE(upstream_request_->waitForHeadersComplete());
   ASSERT_TRUE(fake_upstream_connection_->close());
   ASSERT_TRUE(fake_upstream_connection_->waitForDisconnect());
-  response->waitForEndStream();
+  ASSERT_TRUE(response->waitForEndStream());
 
-  if (downstream_protocol_ == Http::CodecClient::Type::HTTP1) {
+  if (downstream_protocol_ == Http::CodecType::HTTP1) {
     ASSERT_TRUE(codec_client_->waitForDisconnect());
   } else {
     codec_client_->close();
@@ -165,7 +175,7 @@ body_format:
       Http::TestRequestHeaderMapImpl{{":method", "POST"},
                                      {":path", "/package.service/method"},
                                      {":scheme", "http"},
-                                     {":authority", "host"},
+                                     {":authority", "sni.lyft.com"},
                                      {"content-type", "application/grpc"}});
   auto response = std::move(encoder_decoder.second);
 
@@ -175,9 +185,9 @@ body_format:
   ASSERT_TRUE(upstream_request_->waitForHeadersComplete());
   ASSERT_TRUE(fake_upstream_connection_->close());
   ASSERT_TRUE(fake_upstream_connection_->waitForDisconnect());
-  response->waitForEndStream();
+  ASSERT_TRUE(response->waitForEndStream());
 
-  if (downstream_protocol_ == Http::CodecClient::Type::HTTP1) {
+  if (downstream_protocol_ == Http::CodecType::HTTP1) {
     ASSERT_TRUE(codec_client_->waitForDisconnect());
   } else {
     codec_client_->close();
@@ -195,6 +205,57 @@ body_format:
       expected_grpc_message));
 }
 
+// Like MapStatusCodeAndFormatToJson4Grpc, but to non-json format.
+// When grpc is plain text, the grpc-message should remains the same and envoy
+// should not truncate the trailing '\n' characters.
+TEST_P(LocalReplyIntegrationTest, MapStatusCodeAndFormat2Text4Grpc) {
+  const std::string yaml = R"EOF(
+body_format:
+  text_format_source:
+    inline_string: "%LOCAL_REPLY_BODY%:%RESPONSE_CODE%:path=%REQ(:path)%\n"
+)EOF";
+  setLocalReplyConfig(yaml);
+  initialize();
+
+  // Note: there should be an %0A at the end.
+  const std::string expected_grpc_message =
+      "upstream connect error or disconnect/reset before headers. reset reason:"
+      " connection termination:503:path=/package.service/method%0A";
+  codec_client_ = makeHttpConnection(lookupPort("http"));
+
+  auto encoder_decoder = codec_client_->startRequest(
+      Http::TestRequestHeaderMapImpl{{":method", "POST"},
+                                     {":path", "/package.service/method"},
+                                     {":scheme", "http"},
+                                     {":authority", "sni.lyft.com"},
+                                     {"content-type", "application/grpc"}});
+  auto response = std::move(encoder_decoder.second);
+
+  ASSERT_TRUE(fake_upstreams_[0]->waitForHttpConnection(*dispatcher_, fake_upstream_connection_));
+
+  ASSERT_TRUE(fake_upstream_connection_->waitForNewStream(*dispatcher_, upstream_request_));
+  ASSERT_TRUE(upstream_request_->waitForHeadersComplete());
+  ASSERT_TRUE(fake_upstream_connection_->close());
+  ASSERT_TRUE(fake_upstream_connection_->waitForDisconnect());
+  ASSERT_TRUE(response->waitForEndStream());
+
+  if (downstream_protocol_ == Http::CodecType::HTTP1) {
+    ASSERT_TRUE(codec_client_->waitForDisconnect());
+  } else {
+    codec_client_->close();
+  }
+
+  EXPECT_FALSE(upstream_request_->complete());
+  EXPECT_EQ(0U, upstream_request_->bodyLength());
+
+  EXPECT_TRUE(response->complete());
+  EXPECT_EQ("application/grpc", response->headers().ContentType()->value().getStringView());
+  EXPECT_EQ("14", response->headers().GrpcStatus()->value().getStringView());
+  // Check if grpc-message value is same as expected
+  EXPECT_EQ(std::string(response->headers().GrpcMessage()->value().getStringView()),
+            expected_grpc_message);
+}
+
 // Matched second filter has code, headers and body rewrite and its format
 TEST_P(LocalReplyIntegrationTest, MapStatusCodeAndFormatToJsonForFirstMatchingFilter) {
   const std::string yaml = R"EOF(
@@ -203,19 +264,21 @@ mappers:
       header_filter:
         header:
           name: test-header
-          exact_match: exact-match-value-1
+          string_match:
+            exact: exact-match-value-1
     status_code: 550
   - filter:
       header_filter:
         header:
           name: test-header
-          exact_match: exact-match-value
+          string_match:
+            exact: exact-match-value
     status_code: 551
     headers_to_add:
       - header:
           key: foo
           value: bar
-        append: false
+        append_action: OVERWRITE_IF_EXISTS_OR_ADD
     body:
       inline_string: "customized body text"
     body_format_override:
@@ -225,7 +288,8 @@ mappers:
       header_filter:
         header:
           name: test-header
-          exact_match: exact-match-value
+          string_match:
+            exact: exact-match-value
     status_code: 552
 body_format:
   json_format:
@@ -244,7 +308,7 @@ body_format:
       Http::TestRequestHeaderMapImpl{{":method", "POST"},
                                      {":path", "/test/long/url"},
                                      {":scheme", "http"},
-                                     {":authority", "host"},
+                                     {":authority", "sni.lyft.com"},
                                      {"test-header", "exact-match-value"}});
   auto response = std::move(encoder_decoder.second);
 
@@ -254,9 +318,9 @@ body_format:
   ASSERT_TRUE(upstream_request_->waitForHeadersComplete());
   ASSERT_TRUE(fake_upstream_connection_->close());
   ASSERT_TRUE(fake_upstream_connection_->waitForDisconnect());
-  response->waitForEndStream();
+  ASSERT_TRUE(response->waitForEndStream());
 
-  if (downstream_protocol_ == Http::CodecClient::Type::HTTP1) {
+  if (downstream_protocol_ == Http::CodecType::HTTP1) {
     ASSERT_TRUE(codec_client_->waitForDisconnect());
   } else {
     codec_client_->close();
@@ -283,19 +347,22 @@ mappers:
       header_filter:
         header:
           name: test-header
-          exact_match: exact-match-value-1
+          string_match:
+            exact: exact-match-value-1
     status_code: 550
   - filter:
       header_filter:
         header:
           name: test-header
-          exact_match: exact-match-value-2
+          string_match:
+            exact: exact-match-value-2
     status_code: 551
   - filter:
       header_filter:
         header:
           name: test-header
-          exact_match: exact-match-value-3
+          string_match:
+            exact: exact-match-value-3
     status_code: 552
 body_format:
   json_format:
@@ -318,7 +385,7 @@ body_format:
       Http::TestRequestHeaderMapImpl{{":method", "POST"},
                                      {":path", "/test/long/url"},
                                      {":scheme", "http"},
-                                     {":authority", "host"},
+                                     {":authority", "sni.lyft.com"},
                                      {"test-header", "exact-match-value"}});
   auto response = std::move(encoder_decoder.second);
 
@@ -328,9 +395,9 @@ body_format:
   ASSERT_TRUE(upstream_request_->waitForHeadersComplete());
   ASSERT_TRUE(fake_upstream_connection_->close());
   ASSERT_TRUE(fake_upstream_connection_->waitForDisconnect());
-  response->waitForEndStream();
+  ASSERT_TRUE(response->waitForEndStream());
 
-  if (downstream_protocol_ == Http::CodecClient::Type::HTTP1) {
+  if (downstream_protocol_ == Http::CodecType::HTTP1) {
     ASSERT_TRUE(codec_client_->waitForDisconnect());
   } else {
     codec_client_->close();
@@ -355,19 +422,22 @@ mappers:
       header_filter:
         header:
           name: test-header
-          exact_match: exact-match-value-1
+          string_match:
+            exact: exact-match-value-1
     status_code: 550
   - filter:
       header_filter:
         header:
           name: test-header
-          exact_match: exact-match-value-2
+          string_match:
+            exact: exact-match-value-2
     status_code: 551
   - filter:
       header_filter:
         header:
           name: test-header
-          exact_match: exact-match-value-3
+          string_match:
+            exact: exact-match-value-3
     status_code: 552
   )EOF";
   setLocalReplyConfig(yaml);
@@ -379,7 +449,7 @@ mappers:
       Http::TestRequestHeaderMapImpl{{":method", "POST"},
                                      {":path", "/test/long/url"},
                                      {":scheme", "http"},
-                                     {":authority", "host"},
+                                     {":authority", "sni.lyft.com"},
                                      {"test-header", "exact-match-value-2"}});
   auto response = std::move(encoder_decoder.second);
 
@@ -389,9 +459,9 @@ mappers:
   ASSERT_TRUE(upstream_request_->waitForHeadersComplete());
   ASSERT_TRUE(fake_upstream_connection_->close());
   ASSERT_TRUE(fake_upstream_connection_->waitForDisconnect());
-  response->waitForEndStream();
+  ASSERT_TRUE(response->waitForEndStream());
 
-  if (downstream_protocol_ == Http::CodecClient::Type::HTTP1) {
+  if (downstream_protocol_ == Http::CodecType::HTTP1) {
     ASSERT_TRUE(codec_client_->waitForDisconnect());
   } else {
     codec_client_->close();
@@ -437,7 +507,7 @@ body_format:
       Http::TestRequestHeaderMapImpl{{":method", "POST"},
                                      {":path", "/test/long/url"},
                                      {":scheme", "http"},
-                                     {":authority", "host"},
+                                     {":authority", "sni.lyft.com"},
                                      {"test-header", "exact-match-value-2"}});
   auto response = std::move(encoder_decoder.second);
 
@@ -447,9 +517,9 @@ body_format:
   ASSERT_TRUE(upstream_request_->waitForHeadersComplete());
   ASSERT_TRUE(fake_upstream_connection_->close());
   ASSERT_TRUE(fake_upstream_connection_->waitForDisconnect());
-  response->waitForEndStream();
+  ASSERT_TRUE(response->waitForEndStream());
 
-  if (downstream_protocol_ == Http::CodecClient::Type::HTTP1) {
+  if (downstream_protocol_ == Http::CodecType::HTTP1) {
     ASSERT_TRUE(codec_client_->waitForDisconnect());
   } else {
     codec_client_->close();
@@ -495,7 +565,7 @@ body_format:
       Http::TestRequestHeaderMapImpl{{":method", "POST"},
                                      {":path", "/test/long/url"},
                                      {":scheme", "http"},
-                                     {":authority", "host"},
+                                     {":authority", "sni.lyft.com"},
                                      {"test-header", "exact-match-value-2"}});
   auto response = std::move(encoder_decoder.second);
 
@@ -505,9 +575,9 @@ body_format:
   ASSERT_TRUE(upstream_request_->waitForHeadersComplete());
   ASSERT_TRUE(fake_upstream_connection_->close());
   ASSERT_TRUE(fake_upstream_connection_->waitForDisconnect());
-  response->waitForEndStream();
+  ASSERT_TRUE(response->waitForEndStream());
 
-  if (downstream_protocol_ == Http::CodecClient::Type::HTTP1) {
+  if (downstream_protocol_ == Http::CodecType::HTTP1) {
     ASSERT_TRUE(codec_client_->waitForDisconnect());
   } else {
     codec_client_->close();

@@ -2,11 +2,12 @@
 #include "envoy/grpc/status.h"
 #include "envoy/stats/scope.h"
 
-#include "common/config/protobuf_link_hacks.h"
-#include "common/protobuf/protobuf.h"
-#include "common/protobuf/utility.h"
+#include "source/common/config/protobuf_link_hacks.h"
+#include "source/common/protobuf/protobuf.h"
+#include "source/common/protobuf/utility.h"
 
 #include "test/common/grpc/grpc_client_integration.h"
+#include "test/config/v2_link_hacks.h"
 #include "test/integration/http_integration.h"
 #include "test/integration/utility.h"
 #include "test/test_common/network_utility.h"
@@ -121,11 +122,13 @@ static_resources:
                                                   Platform::null_device_path));
 }
 
-class AggregateIntegrationTest : public testing::TestWithParam<Network::Address::IpVersion>,
-                                 public HttpIntegrationTest {
+class AggregateIntegrationTest
+    : public testing::TestWithParam<std::tuple<Network::Address::IpVersion, bool>>,
+      public HttpIntegrationTest {
 public:
   AggregateIntegrationTest()
-      : HttpIntegrationTest(Http::CodecClient::Type::HTTP1, GetParam(), config()) {
+      : HttpIntegrationTest(Http::CodecType::HTTP1, std::get<0>(GetParam()), config()),
+        deferred_cluster_creation_(std::get<1>(GetParam())) {
     use_lds_ = false;
   }
 
@@ -133,20 +136,24 @@ public:
 
   void initialize() override {
     use_lds_ = false;
-    setUpstreamCount(2);                                  // the CDS cluster
-    setUpstreamProtocol(FakeHttpConnection::Type::HTTP2); // CDS uses gRPC uses HTTP2.
+    setUpstreamCount(2);                         // the CDS cluster
+    setUpstreamProtocol(Http::CodecType::HTTP2); // CDS uses gRPC uses HTTP2.
 
     defer_listener_finalization_ = true;
+    config_helper_.addConfigModifier([this](envoy::config::bootstrap::v3::Bootstrap& bootstrap) {
+      bootstrap.mutable_cluster_manager()->set_enable_deferred_cluster_creation(
+          deferred_cluster_creation_);
+    });
     HttpIntegrationTest::initialize();
 
-    addFakeUpstream(FakeHttpConnection::Type::HTTP2);
-    addFakeUpstream(FakeHttpConnection::Type::HTTP2);
+    addFakeUpstream(Http::CodecType::HTTP2);
+    addFakeUpstream(Http::CodecType::HTTP2);
     cluster1_ = ConfigHelper::buildStaticCluster(
         FirstClusterName, fake_upstreams_[FirstUpstreamIndex]->localAddress()->ip()->port(),
-        Network::Test::getLoopbackAddressString(GetParam()));
+        Network::Test::getLoopbackAddressString(version_));
     cluster2_ = ConfigHelper::buildStaticCluster(
         SecondClusterName, fake_upstreams_[SecondUpstreamIndex]->localAddress()->ip()->port(),
-        Network::Test::getLoopbackAddressString(GetParam()));
+        Network::Test::getLoopbackAddressString(version_));
 
     // Let Envoy establish its connection to the CDS server.
     acceptXdsConnection();
@@ -173,12 +180,14 @@ public:
     xds_stream_->startGrpcStream();
   }
 
+  const bool deferred_cluster_creation_;
   envoy::config::cluster::v3::Cluster cluster1_;
   envoy::config::cluster::v3::Cluster cluster2_;
 };
 
-INSTANTIATE_TEST_SUITE_P(IpVersions, AggregateIntegrationTest,
-                         testing::ValuesIn(TestEnvironment::getIpVersionsForTest()));
+INSTANTIATE_TEST_SUITE_P(
+    IpVersions, AggregateIntegrationTest,
+    testing::Combine(testing::ValuesIn(TestEnvironment::getIpVersionsForTest()), testing::Bool()));
 
 TEST_P(AggregateIntegrationTest, ClusterUpDownUp) {
   // Calls our initialize(), which includes establishing a listener, route, and cluster.
@@ -288,7 +297,7 @@ TEST_P(AggregateIntegrationTest, PreviousPrioritiesRetryPredicate) {
   waitForNextUpstreamRequest(SecondUpstreamIndex);
   upstream_request_->encodeHeaders(default_response_headers_, true);
 
-  response->waitForEndStream();
+  ASSERT_TRUE(response->waitForEndStream());
   EXPECT_TRUE(upstream_request_->complete());
 
   EXPECT_TRUE(response->complete());

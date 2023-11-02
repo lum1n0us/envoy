@@ -19,21 +19,27 @@
 #include "envoy/stats/tag_producer.h"
 #include "envoy/upstream/cluster_manager.h"
 
-#include "common/common/assert.h"
-#include "common/common/backoff_strategy.h"
-#include "common/common/hash.h"
-#include "common/common/hex.h"
-#include "common/common/utility.h"
-#include "common/grpc/common.h"
-#include "common/protobuf/protobuf.h"
-#include "common/protobuf/utility.h"
-#include "common/runtime/runtime_features.h"
-#include "common/singleton/const_singleton.h"
+#include "source/common/common/assert.h"
+#include "source/common/common/backoff_strategy.h"
+#include "source/common/common/hash.h"
+#include "source/common/common/hex.h"
+#include "source/common/common/utility.h"
+#include "source/common/grpc/common.h"
+#include "source/common/protobuf/protobuf.h"
+#include "source/common/protobuf/utility.h"
+#include "source/common/runtime/runtime_features.h"
+#include "source/common/singleton/const_singleton.h"
+#include "source/common/version/api_version.h"
+#include "source/common/version/api_version_struct.h"
 
+#include "absl/types/optional.h"
 #include "udpa/type/v1/typed_struct.pb.h"
+#include "xds/type/v3/typed_struct.pb.h"
 
 namespace Envoy {
 namespace Config {
+
+constexpr absl::string_view Wildcard = "*";
 
 /**
  * Constant Api Type Values, used by envoy::config::core::v3::ApiConfigSource.
@@ -96,22 +102,10 @@ public:
   /**
    * Extract initial_fetch_timeout as a std::chrono::milliseconds from
    * envoy::config::core::v3::ApiConfigSource. If request_timeout isn't set in the config source, a
-   * default value of 0s will be returned.
+   * default value of 15s will be returned.
    */
   static std::chrono::milliseconds
   configSourceInitialFetchTimeout(const envoy::config::core::v3::ConfigSource& config_source);
-
-  /**
-   * Populate an envoy::config::core::v3::ApiConfigSource.
-   * @param cluster supplies the cluster name for the ApiConfigSource.
-   * @param refresh_delay_ms supplies the refresh delay for the ApiConfigSource in ms.
-   * @param api_type supplies the type of subscription to use for the ApiConfigSource.
-   * @param api_config_source a reference to the envoy::config::core::v3::ApiConfigSource object to
-   * populate.
-   */
-  static void translateApiConfigSource(const std::string& cluster, uint32_t refresh_delay_ms,
-                                       const std::string& api_type,
-                                       envoy::config::core::v3::ApiConfigSource& api_config_source);
 
   /**
    * Check cluster info for API config sanity. Throws on error.
@@ -155,15 +149,6 @@ public:
   static void checkFilesystemSubscriptionBackingPath(const std::string& path, Api::Api& api);
 
   /**
-   * Check the grpc_services and cluster_names for API config sanity. Throws on error.
-   * @param api_config_source the config source to validate.
-   * @throws EnvoyException when an API config has the wrong number of gRPC
-   * services or cluster names, depending on expectations set by its API type.
-   */
-  static void
-  checkApiConfigSourceNames(const envoy::config::core::v3::ApiConfigSource& api_config_source);
-
-  /**
    * Check the validity of a cluster backing an api config source. Throws on error.
    * @param primary_clusters the API config source eligible clusters.
    * @param cluster_name the cluster name to validate.
@@ -185,33 +170,33 @@ public:
       const envoy::config::core::v3::ApiConfigSource& api_config_source);
 
   /**
-   * Access transport_api_version field in ApiConfigSource, while validating version
-   * compatibility.
-   * @param api_config_source the config source to extract transport API version from.
-   * @return envoy::config::core::v3::ApiVersion transport API version
-   * @throws DeprecatedMajorVersionException when the transport version is disabled.
+   * Gets the gRPC control plane management server from the API config source. The result is either
+   * a cluster name or a host name.
+   * @param api_config_source the config source to validate.
+   * @return the gRPC control plane server, or absl::nullopt if it couldn't be extracted.
    */
-  template <class Proto>
-  static envoy::config::core::v3::ApiVersion
-  getAndCheckTransportVersion(const Proto& api_config_source) {
+  static absl::optional<std::string>
+  getGrpcControlPlane(const envoy::config::core::v3::ApiConfigSource& api_config_source);
+
+  /**
+   * Validate transport_api_version field in ApiConfigSource.
+   * @param api_config_source the config source to extract transport API version from.
+   * @returns a failure status when the transport version is disabled.
+   */
+  template <class Proto> static absl::Status checkTransportVersion(const Proto& api_config_source) {
     const auto transport_api_version = api_config_source.transport_api_version();
-    ASSERT(Thread::MainThread::isMainThread());
-    if (transport_api_version == envoy::config::core::v3::ApiVersion::AUTO ||
-        transport_api_version == envoy::config::core::v3::ApiVersion::V2) {
-      Runtime::LoaderSingleton::getExisting()->countDeprecatedFeatureUse();
+    ASSERT_IS_MAIN_OR_TEST_THREAD();
+    if (transport_api_version != envoy::config::core::v3::ApiVersion::V3) {
       const std::string& warning = fmt::format(
           "V2 (and AUTO) xDS transport protocol versions are deprecated in {}. "
-          "The v2 xDS major version is deprecated and disabled by default. Support for v2 will be "
-          "removed from Envoy at the start of Q1 2021. You may make use of v2 in Q4 2020 by "
-          "following the advice in https://www.envoyproxy.io/docs/envoy/latest/faq/api/transition.",
+          "The v2 xDS major version has been removed and is no longer supported. "
+          "You may be missing explicit V3 configuration of the transport API version, "
+          "see the advice in https://www.envoyproxy.io/docs/envoy/latest/faq/api/envoy_v3.",
           api_config_source.DebugString());
       ENVOY_LOG_MISC(warn, warning);
-      if (!Runtime::runtimeFeatureEnabled(
-              "envoy.test_only.broken_in_production.enable_deprecated_v2_api")) {
-        throw DeprecatedMajorVersionException(warning);
-      }
+      return absl::InvalidArgumentError(warning);
     }
-    return transport_api_version;
+    return absl::OkStatus();
   }
 
   /**
@@ -249,21 +234,33 @@ public:
    * Get a Factory from the registry with a particular name (and templated type) with error checking
    * to ensure the name and factory are valid.
    * @param name string identifier for the particular implementation.
+   * @param is_optional exception will be throw when the value is false and no factory found.
    * @return factory the factory requested or nullptr if it does not exist.
    */
-  template <class Factory> static Factory& getAndCheckFactoryByName(const std::string& name) {
+  template <class Factory>
+  static Factory* getAndCheckFactoryByName(const std::string& name, bool is_optional) {
     if (name.empty()) {
       ExceptionUtil::throwEnvoyException("Provided name for static registration lookup was empty.");
     }
 
     Factory* factory = Registry::FactoryRegistry<Factory>::getFactory(name);
 
-    if (factory == nullptr) {
+    if (factory == nullptr && !is_optional) {
       ExceptionUtil::throwEnvoyException(
           fmt::format("Didn't find a registered implementation for name: '{}'", name));
     }
 
-    return *factory;
+    return factory;
+  }
+
+  /**
+   * Get a Factory from the registry with a particular name (and templated type) with error checking
+   * to ensure the name and factory are valid.
+   * @param name string identifier for the particular implementation.
+   * @return factory the factory requested or nullptr if it does not exist.
+   */
+  template <class Factory> static Factory& getAndCheckFactoryByName(const std::string& name) {
+    return *getAndCheckFactoryByName<Factory>(name, false);
   }
 
   /**
@@ -285,11 +282,36 @@ public:
   template <class Factory, class ProtoMessage>
   static Factory* getFactory(const ProtoMessage& message) {
     Factory* factory = Utility::getFactoryByType<Factory>(message.typed_config());
-    if (factory != nullptr) {
+    if (factory != nullptr ||
+        Runtime::runtimeFeatureEnabled("envoy.reloadable_features.no_extension_lookup_by_name")) {
       return factory;
     }
 
     return Utility::getFactoryByName<Factory>(message.name());
+  }
+
+  /**
+   * Get a Factory from the registry with error checking to ensure the name and the factory are
+   * valid. And a flag to control return nullptr or throw an exception.
+   * @param message proto that contains fields 'name' and 'typed_config'.
+   * @param is_optional an exception will be throw when the value is false and no factory found.
+   * @return factory the factory requested or nullptr if it does not exist.
+   */
+  template <class Factory, class ProtoMessage>
+  static Factory* getAndCheckFactory(const ProtoMessage& message, bool is_optional) {
+    Factory* factory = Utility::getFactoryByType<Factory>(message.typed_config());
+    if (Runtime::runtimeFeatureEnabled("envoy.reloadable_features.no_extension_lookup_by_name")) {
+      if (factory == nullptr && !is_optional) {
+        ExceptionUtil::throwEnvoyException(
+            fmt::format("Didn't find a registered implementation for '{}' with type URL: '{}'",
+                        message.name(), getFactoryType(message.typed_config())));
+      }
+      return factory;
+    } else if (factory != nullptr) {
+      return factory;
+    }
+
+    return Utility::getAndCheckFactoryByName<Factory>(message.name(), is_optional);
   }
 
   /**
@@ -299,12 +321,7 @@ public:
    */
   template <class Factory, class ProtoMessage>
   static Factory& getAndCheckFactory(const ProtoMessage& message) {
-    Factory* factory = Utility::getFactoryByType<Factory>(message.typed_config());
-    if (factory != nullptr) {
-      return *factory;
-    }
-
-    return Utility::getAndCheckFactoryByName<Factory>(message.name());
+    return *getAndCheckFactory<Factory>(message, false);
   }
 
   /**
@@ -313,11 +330,18 @@ public:
    */
   static std::string getFactoryType(const ProtobufWkt::Any& typed_config) {
     static const std::string& typed_struct_type =
-        udpa::type::v1::TypedStruct::default_instance().GetDescriptor()->full_name();
+        xds::type::v3::TypedStruct::default_instance().GetTypeName();
+    static const std::string& legacy_typed_struct_type =
+        udpa::type::v1::TypedStruct::default_instance().GetTypeName();
     // Unpack methods will only use the fully qualified type name after the last '/'.
     // https://github.com/protocolbuffers/protobuf/blob/3.6.x/src/google/protobuf/any.proto#L87
     auto type = std::string(TypeUtil::typeUrlToDescriptorFullName(typed_config.type_url()));
     if (type == typed_struct_type) {
+      xds::type::v3::TypedStruct typed_struct;
+      MessageUtil::unpackTo(typed_config, typed_struct);
+      // Not handling nested structs or typed structs in typed structs
+      return std::string(TypeUtil::typeUrlToDescriptorFullName(typed_struct.type_url()));
+    } else if (type == legacy_typed_struct_type) {
       udpa::type::v1::TypedStruct typed_struct;
       MessageUtil::unpackTo(typed_config, typed_struct);
       // Not handling nested structs or typed structs in typed structs
@@ -357,11 +381,9 @@ public:
     RELEASE_ASSERT(config != nullptr, "");
 
     // Check that the config type is not google.protobuf.Empty
-    RELEASE_ASSERT(config->GetDescriptor()->full_name() != "google.protobuf.Empty", "");
+    RELEASE_ASSERT(config->GetTypeName() != "google.protobuf.Empty", "");
 
-    translateOpaqueConfig(enclosing_message.typed_config(),
-                          enclosing_message.hidden_envoy_deprecated_config(), validation_visitor,
-                          *config);
+    translateOpaqueConfig(enclosing_message.typed_config(), validation_visitor, *config);
     return config;
   }
 
@@ -383,9 +405,9 @@ public:
     RELEASE_ASSERT(config != nullptr, "");
 
     // Check that the config type is not google.protobuf.Empty
-    RELEASE_ASSERT(config->GetDescriptor()->full_name() != "google.protobuf.Empty", "");
+    RELEASE_ASSERT(config->GetTypeName() != "google.protobuf.Empty", "");
 
-    translateOpaqueConfig(typed_config, ProtobufWkt::Struct(), validation_visitor, *config);
+    translateOpaqueConfig(typed_config, validation_visitor, *config);
     return config;
   }
 
@@ -398,16 +420,19 @@ public:
    * Create TagProducer instance. Check all tag names for conflicts to avoid
    * unexpected tag name overwriting.
    * @param bootstrap bootstrap proto.
+   * @param cli_tags tags that are provided by the cli
    * @throws EnvoyException when the conflict of tag names is found.
    */
   static Stats::TagProducerPtr
-  createTagProducer(const envoy::config::bootstrap::v3::Bootstrap& bootstrap);
+  createTagProducer(const envoy::config::bootstrap::v3::Bootstrap& bootstrap,
+                    const Stats::TagVector& cli_tags);
 
   /**
    * Create StatsMatcher instance.
    */
   static Stats::StatsMatcherPtr
-  createStatsMatcher(const envoy::config::bootstrap::v3::Bootstrap& bootstrap);
+  createStatsMatcher(const envoy::config::bootstrap::v3::Bootstrap& bootstrap,
+                     Stats::SymbolTable& symbol_table);
 
   /**
    * Create HistogramSettings instance.
@@ -428,23 +453,12 @@ public:
                                 Stats::Scope& scope, bool skip_cluster_check);
 
   /**
-   * Translate a set of cluster's hosts into a load assignment configuration.
-   * @param hosts cluster's list of hosts.
-   * @return envoy::config::endpoint::v3::ClusterLoadAssignment a load assignment configuration.
-   */
-  static envoy::config::endpoint::v3::ClusterLoadAssignment
-  translateClusterHosts(const Protobuf::RepeatedPtrField<envoy::config::core::v3::Address>& hosts);
-
-  /**
-   * Translate opaque config from google.protobuf.Any or google.protobuf.Struct to defined proto
-   * message.
+   * Translate opaque config from google.protobuf.Any to defined proto message.
    * @param typed_config opaque config packed in google.protobuf.Any
-   * @param config the deprecated google.protobuf.Struct config, empty struct if doesn't exist.
    * @param validation_visitor message validation visitor instance.
    * @param out_proto the proto message instantiated by extensions
    */
   static void translateOpaqueConfig(const ProtobufWkt::Any& typed_config,
-                                    const ProtobufWkt::Struct& config,
                                     ProtobufMessage::ValidationVisitor& validation_visitor,
                                     Protobuf::Message& out_proto);
 
@@ -458,7 +472,7 @@ public:
    * @throws EnvoyException if there is a mismatch between design and configuration.
    */
   static void validateTerminalFilters(const std::string& name, const std::string& filter_type,
-                                      const char* filter_chain_type, bool is_terminal_filter,
+                                      const std::string& filter_chain_type, bool is_terminal_filter,
                                       bool last_filter_in_current_config) {
     if (is_terminal_filter && !last_filter_in_current_config) {
       ExceptionUtil::throwEnvoyException(
@@ -497,7 +511,72 @@ public:
     }
     return std::make_unique<FixedBackOffStrategy>(dns_refresh_rate_ms);
   }
-};
 
+  /**
+   * Returns Jittered Exponential BackOff Strategy from BackoffStrategy config if present or
+   * provided default timer values
+   * @param api_config_source config
+   * @param random random generator
+   * @param default_base_interval_ms  Default base interval, must be > 0
+   * @param default_max_interval_ms (optional) Default maximum interval
+   * @return JitteredExponentialBackOffStrategyPtr if 1. Backoff Strategy is
+   * found in the config or 2. default base interval and default maximum interval is specified or 3.
+   * max interval is set to 10*default base interval
+   */
+  static JitteredExponentialBackOffStrategyPtr prepareJitteredExponentialBackOffStrategy(
+      const envoy::config::core::v3::ApiConfigSource& api_config_source,
+      Random::RandomGenerator& random, const uint32_t default_base_interval_ms,
+      absl::optional<const uint32_t> default_max_interval_ms) {
+
+    auto& grpc_services = api_config_source.grpc_services();
+    if (!grpc_services.empty() && grpc_services[0].has_envoy_grpc()) {
+      return prepareJitteredExponentialBackOffStrategy(
+          grpc_services[0].envoy_grpc(), random, default_base_interval_ms, default_max_interval_ms);
+    }
+    return buildJitteredExponentialBackOffStrategy(absl::nullopt, random, default_base_interval_ms,
+                                                   default_max_interval_ms);
+  }
+
+  /**
+   * Prepares Jittered Exponential BackOff Strategy from config containing the Retry Policy
+   * @param config config containing RetryPolicy <envoy_v3_api_msg_config.core.v3.RetryPolicy>
+   * @param random random generator
+   * @param default_base_interval_ms  Default base interval, must be > 0
+   * @param default_max_interval_ms (optional) Default maximum interval
+   * @return JitteredExponentialBackOffStrategyPtr if 1. RetryPolicy containing backoff values is
+   * found in config or 2. default base interval and default maximum interval is specified or 3.
+   * default max interval is set to 10*default base interval
+   */
+  template <typename T>
+  static JitteredExponentialBackOffStrategyPtr prepareJitteredExponentialBackOffStrategy(
+      const T& config, Random::RandomGenerator& random, const uint32_t default_base_interval_ms,
+      absl::optional<const uint32_t> default_max_interval_ms) {
+    // If RetryPolicy containing backoff values is found in config
+    if (config.has_retry_policy() && config.retry_policy().has_retry_back_off()) {
+      return buildJitteredExponentialBackOffStrategy(config.retry_policy().retry_back_off(), random,
+                                                     default_base_interval_ms,
+                                                     default_max_interval_ms);
+    }
+    return buildJitteredExponentialBackOffStrategy(absl::nullopt, random, default_base_interval_ms,
+                                                   default_max_interval_ms);
+  }
+
+private:
+  /**
+   * Returns Jittered Exponential BackOff Strategy from BackoffStrategy config or default
+   * values
+   * @param config (optional) BackoffStrategy config
+   * @param random random generator
+   * @param default_base_interval_ms  Default base interval, must be > 0
+   * @param default_max_interval_ms (optional) Default maximum interval
+   * @return JitteredExponentialBackOffStrategyPtr if 1. Backoff Strategy is
+   * specified or 2. default base interval and default maximum interval is specified or 3.
+   * max interval is set to 10*default base interval
+   */
+  static JitteredExponentialBackOffStrategyPtr buildJitteredExponentialBackOffStrategy(
+      absl::optional<const envoy::config::core::v3::BackoffStrategy> backoff,
+      Random::RandomGenerator& random, const uint32_t default_base_interval_ms,
+      absl::optional<const uint32_t> default_max_interval_ms);
+};
 } // namespace Config
 } // namespace Envoy

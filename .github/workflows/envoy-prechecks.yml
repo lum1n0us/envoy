@@ -1,0 +1,47 @@
+name: Envoy/prechecks
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+    - main
+    - release/v*
+  pull_request_target:
+    paths:
+    - '**/requirements*.txt'
+    - '**/go.mod'
+    - '**/*.bzl'
+    - tools/dependency/BUILD
+    - WORKSPACE
+    - .github/workflows/envoy-prechecks.yml
+    - .github/workflows/_*.yml
+
+concurrency:
+  group: ${{ github.event.inputs.head_ref || github.run_id }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  env:
+    uses: ./.github/workflows/_env.yml
+    with:
+      prime-build-image: true
+      check-mobile-run: false
+    permissions:
+      contents: read
+      packages: read
+      pull-requests: read
+
+  deps:
+    needs:
+    - env
+    uses: ./.github/workflows/_precheck_deps.yml
+    name: Precheck ${{ needs.env.outputs.repo-ref-title }}
+    with:
+      build-image-ubuntu: ${{ needs.env.outputs.build_image_ubuntu }}
+      dependency-review: ${{ github.event_name == 'pull_request_target' && github.repository == 'envoyproxy/envoy' }}
+      repo-ref: ${{ needs.env.outputs.repo-ref }}
+    permissions:
+      contents: read
+      packages: read

@@ -1,8 +1,8 @@
 #pragma once
 
-#include "common/common/thread.h"
-#include "common/common/thread_synchronizer.h"
-#include "common/common/token_bucket_impl.h"
+#include "source/common/common/thread.h"
+#include "source/common/common/thread_synchronizer.h"
+#include "source/common/common/token_bucket_impl.h"
 
 namespace Envoy {
 
@@ -43,7 +43,7 @@ public:
 private:
   Thread::MutexBasicLockable mutex_;
   TokenBucketImpl impl_ ABSL_GUARDED_BY(mutex_);
-  bool reset_once_ ABSL_GUARDED_BY(mutex_);
+  bool reset_once_ ABSL_GUARDED_BY(mutex_){false};
   mutable Thread::ThreadSynchronizer synchronizer_; // Used only for testing.
   friend class SharedTokenBucketImplTest;
 };

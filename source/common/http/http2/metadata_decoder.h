@@ -5,8 +5,8 @@
 
 #include "envoy/http/codec.h"
 
-#include "common/buffer/buffer_impl.h"
-#include "common/common/logger.h"
+#include "source/common/buffer/buffer_impl.h"
+#include "source/common/common/logger.h"
 
 #include "nghttp2/nghttp2.h"
 
@@ -25,6 +25,7 @@ public:
    * finishes decoding metadata.
    */
   MetadataDecoder(MetadataCallback cb);
+  ~MetadataDecoder();
 
   /**
    * Calls this function when METADATA frame payload is received. The payload doesn't need to be
@@ -44,15 +45,34 @@ public:
    */
   bool onMetadataFrameComplete(bool end_metadata);
 
+  /**
+   * Returns the total size of METADATA frame payloads received.
+   */
+  uint64_t totalPayloadSize() const { return total_payload_size_; }
+
 private:
   friend class MetadataEncoderDecoderTest_VerifyEncoderDecoderOnMultipleMetadataMaps_Test;
   friend class MetadataEncoderDecoderTest_VerifyEncoderDecoderMultipleMetadataReachSizeLimit_Test;
+  friend class MetadataEncoderTest_VerifyEncoderDecoderOnMultipleMetadataMaps_Test;
+  friend class MetadataEncoderTest_VerifyEncoderDecoderMultipleMetadataReachSizeLimit_Test;
+
+  struct HpackDecoderContext;
+
   /**
    * Decodes METADATA payload using nghttp2.
    * @param end_metadata indicates is END_METADATA is true.
    * @return if decoding succeeds.
    */
   bool decodeMetadataPayloadUsingNghttp2(bool end_metadata);
+
+  /**
+   * Decodes METADATA payload using QUICHE.
+   * @param end_metadata indicates is END_METADATA is true.
+   * @return if decoding succeeds.
+   */
+  bool decodeMetadataPayload(bool end_metadata);
+
+  void resetDecoderContext();
 
   // Metadata that is currently being decoded.
   MetadataMapPtr metadata_map_;
@@ -72,6 +92,8 @@ private:
   // inflater failure on one stream can impact other streams.
   using Inflater = CSmartPtr<nghttp2_hd_inflater, nghttp2_hd_inflate_del>;
   Inflater inflater_;
+
+  std::unique_ptr<HpackDecoderContext> decoder_context_;
 };
 
 } // namespace Http2

@@ -1,14 +1,13 @@
-#include "extensions/io_socket/user_space/io_handle_impl.h"
+#include "source/extensions/io_socket/user_space/io_handle_impl.h"
 
 #include "envoy/buffer/buffer.h"
 #include "envoy/common/platform.h"
 
-#include "common/api/os_sys_calls_impl.h"
-#include "common/common/assert.h"
-#include "common/common/utility.h"
-#include "common/network/address_impl.h"
-
-#include "extensions/io_socket/user_space/file_event_impl.h"
+#include "source/common/api/os_sys_calls_impl.h"
+#include "source/common/common/assert.h"
+#include "source/common/common/utility.h"
+#include "source/common/network/address_impl.h"
+#include "source/extensions/io_socket/user_space/file_event_impl.h"
 
 #include "absl/types/optional.h"
 
@@ -44,7 +43,7 @@ uint64_t moveUpTo(Buffer::Instance& dst, Buffer::Instance& src, uint64_t max_len
     }
   }
   uint64_t res = std::min(max_length, src.length());
-  dst.move(src, res);
+  dst.move(src, res, /*reset_drain_trackers_and_accounting=*/true);
   return res;
 }
 } // namespace
@@ -55,9 +54,10 @@ const Network::Address::InstanceConstSharedPtr& IoHandleImpl::getCommonInternalA
                              "internal_address_for_user_space_io_handle"));
 }
 
-IoHandleImpl::IoHandleImpl()
+IoHandleImpl::IoHandleImpl(PassthroughStateSharedPtr passthrough_state)
     : pending_received_data_([&]() -> void { this->onBelowLowWatermark(); },
-                             [&]() -> void { this->onAboveHighWatermark(); }, []() -> void {}) {}
+                             [&]() -> void { this->onAboveHighWatermark(); }, []() -> void {}),
+      passthrough_state_(passthrough_state) {}
 
 IoHandleImpl::~IoHandleImpl() {
   if (!closed_) {
@@ -80,6 +80,10 @@ Api::IoCallUint64Result IoHandleImpl::close() {
       ENVOY_LOG(trace, "socket {} close after peer closed.", static_cast<void*>(this));
     }
   }
+  if (user_file_event_) {
+    // No event callback should be handled after close completes.
+    user_file_event_.reset();
+  }
   closed_ = true;
   return Api::ioCallUint64ResultNoError();
 }
@@ -89,15 +93,13 @@ bool IoHandleImpl::isOpen() const { return !closed_; }
 Api::IoCallUint64Result IoHandleImpl::readv(uint64_t max_length, Buffer::RawSlice* slices,
                                             uint64_t num_slice) {
   if (!isOpen()) {
-    return {0, Api::IoErrorPtr(new Network::IoSocketError(SOCKET_ERROR_BADF),
-                               Network::IoSocketError::deleteIoError)};
+    return {0, Network::IoSocketError::create(SOCKET_ERROR_BADF)};
   }
   if (pending_received_data_.length() == 0) {
     if (receive_data_end_stream_) {
-      return {0, Api::IoErrorPtr(nullptr, Network::IoSocketError::deleteIoError)};
+      return {0, Api::IoError::none()};
     } else {
-      return {0, Api::IoErrorPtr(Network::IoSocketError::getIoSocketEagainInstance(),
-                                 Network::IoSocketError::deleteIoError)};
+      return {0, Network::IoSocketError::getIoSocketEagainError()};
     }
   }
   // The read bytes can not exceed the provided buffer size or pending received size.
@@ -114,7 +116,7 @@ Api::IoCallUint64Result IoHandleImpl::readv(uint64_t max_length, Buffer::RawSlic
   const auto bytes_read = bytes_offset;
   ASSERT(bytes_read <= max_bytes_to_read);
   ENVOY_LOG(trace, "socket {} readv {} bytes", static_cast<void*>(this), bytes_read);
-  return {bytes_read, Api::IoErrorPtr(nullptr, Network::IoSocketError::deleteIoError)};
+  return {bytes_read, Api::IoError::none()};
 }
 
 Api::IoCallUint64Result IoHandleImpl::read(Buffer::Instance& buffer,
@@ -125,19 +127,17 @@ Api::IoCallUint64Result IoHandleImpl::read(Buffer::Instance& buffer,
     return Api::ioCallUint64ResultNoError();
   }
   if (!isOpen()) {
-    return {0, Api::IoErrorPtr(new Network::IoSocketError(SOCKET_ERROR_BADF),
-                               Network::IoSocketError::deleteIoError)};
+    return {0, Network::IoSocketError::create(SOCKET_ERROR_BADF)};
   }
   if (pending_received_data_.length() == 0) {
     if (receive_data_end_stream_) {
-      return {0, Api::IoErrorPtr(nullptr, Network::IoSocketError::deleteIoError)};
+      return {0, Api::IoError::none()};
     } else {
-      return {0, Api::IoErrorPtr(Network::IoSocketError::getIoSocketEagainInstance(),
-                                 Network::IoSocketError::deleteIoError)};
+      return {0, Network::IoSocketError::getIoSocketEagainError()};
     }
   }
   const uint64_t bytes_to_read = moveUpTo(buffer, pending_received_data_, max_length);
-  return {bytes_to_read, Api::IoErrorPtr(nullptr, Network::IoSocketError::deleteIoError)};
+  return {bytes_to_read, Api::IoError::none()};
 }
 
 Api::IoCallUint64Result IoHandleImpl::writev(const Buffer::RawSlice* slices, uint64_t num_slice) {
@@ -151,26 +151,22 @@ Api::IoCallUint64Result IoHandleImpl::writev(const Buffer::RawSlice* slices, uin
   }
   if (is_input_empty) {
     return Api::ioCallUint64ResultNoError();
-  };
+  }
   if (!isOpen()) {
-    return {0, Api::IoErrorPtr(new Network::IoSocketError(SOCKET_ERROR_BADF),
-                               Network::IoSocketError::deleteIoError)};
+    return {0, Network::IoSocketError::getIoSocketEbadfError()};
   }
   // Closed peer.
   if (!peer_handle_) {
-    return {0, Api::IoErrorPtr(new Network::IoSocketError(SOCKET_ERROR_INVAL),
-                               Network::IoSocketError::deleteIoError)};
+    return {0, Network::IoSocketError::create(SOCKET_ERROR_INVAL)};
   }
   // Error: write after close.
   if (peer_handle_->isPeerShutDownWrite()) {
     // TODO(lambdai): `EPIPE` or `ENOTCONN`.
-    return {0, Api::IoErrorPtr(new Network::IoSocketError(SOCKET_ERROR_INVAL),
-                               Network::IoSocketError::deleteIoError)};
+    return {0, Network::IoSocketError::create(SOCKET_ERROR_INVAL)};
   }
   // The peer is valid but temporarily does not accept new data. Likely due to flow control.
   if (!peer_handle_->isWritable()) {
-    return {0, Api::IoErrorPtr(Network::IoSocketError::getIoSocketEagainInstance(),
-                               Network::IoSocketError::deleteIoError)};
+    return {0, Network::IoSocketError::getIoSocketEagainError()};
   }
 
   auto* const dest_buffer = peer_handle_->getWriteBuffer();
@@ -184,7 +180,7 @@ Api::IoCallUint64Result IoHandleImpl::writev(const Buffer::RawSlice* slices, uin
   }
   peer_handle_->setNewDataAvailable();
   ENVOY_LOG(trace, "socket {} writev {} bytes", static_cast<void*>(this), bytes_written);
-  return {bytes_written, Api::IoErrorPtr(nullptr, Network::IoSocketError::deleteIoError)};
+  return {bytes_written, Api::IoError::none()};
 }
 
 Api::IoCallUint64Result IoHandleImpl::write(Buffer::Instance& buffer) {
@@ -193,24 +189,20 @@ Api::IoCallUint64Result IoHandleImpl::write(Buffer::Instance& buffer) {
     return Api::ioCallUint64ResultNoError();
   }
   if (!isOpen()) {
-    return {0, Api::IoErrorPtr(new Network::IoSocketError(SOCKET_ERROR_BADF),
-                               Network::IoSocketError::deleteIoError)};
+    return {0, Network::IoSocketError::getIoSocketEbadfError()};
   }
   // Closed peer.
   if (!peer_handle_) {
-    return {0, Api::IoErrorPtr(new Network::IoSocketError(SOCKET_ERROR_INVAL),
-                               Network::IoSocketError::deleteIoError)};
+    return {0, Network::IoSocketError::create(SOCKET_ERROR_INVAL)};
   }
   // Error: write after close.
   if (peer_handle_->isPeerShutDownWrite()) {
     // TODO(lambdai): `EPIPE` or `ENOTCONN`.
-    return {0, Api::IoErrorPtr(new Network::IoSocketError(SOCKET_ERROR_INVAL),
-                               Network::IoSocketError::deleteIoError)};
+    return {0, Network::IoSocketError::create(SOCKET_ERROR_INVAL)};
   }
   // The peer is valid but temporarily does not accept new data. Likely due to flow control.
   if (!peer_handle_->isWritable()) {
-    return {0, Api::IoErrorPtr(Network::IoSocketError::getIoSocketEagainInstance(),
-                               Network::IoSocketError::deleteIoError)};
+    return {0, Network::IoSocketError::getIoSocketEagainError()};
   }
   const uint64_t max_bytes_to_write = buffer.length();
   const uint64_t total_bytes_to_write =
@@ -220,7 +212,7 @@ Api::IoCallUint64Result IoHandleImpl::write(Buffer::Instance& buffer) {
   peer_handle_->setNewDataAvailable();
   ENVOY_LOG(trace, "socket {} write {} bytes of {}", static_cast<void*>(this), total_bytes_to_write,
             max_bytes_to_write);
-  return {total_bytes_to_write, Api::IoErrorPtr(nullptr, Network::IoSocketError::deleteIoError)};
+  return {total_bytes_to_write, Api::IoError::none()};
 }
 
 Api::IoCallUint64Result IoHandleImpl::sendmsg(const Buffer::RawSlice*, uint64_t, int,
@@ -240,16 +232,14 @@ Api::IoCallUint64Result IoHandleImpl::recvmmsg(RawSliceArrays&, uint32_t, RecvMs
 
 Api::IoCallUint64Result IoHandleImpl::recv(void* buffer, size_t length, int flags) {
   if (!isOpen()) {
-    return {0, Api::IoErrorPtr(new Network::IoSocketError(SOCKET_ERROR_BADF),
-                               Network::IoSocketError::deleteIoError)};
+    return {0, Network::IoSocketError::getIoSocketEbadfError()};
   }
   // No data and the writer closed.
   if (pending_received_data_.length() == 0) {
     if (receive_data_end_stream_) {
-      return {0, Api::IoErrorPtr(nullptr, Network::IoSocketError::deleteIoError)};
+      return {0, Api::IoError::none()};
     } else {
-      return {0, Api::IoErrorPtr(Network::IoSocketError::getIoSocketEagainInstance(),
-                                 Network::IoSocketError::deleteIoError)};
+      return {0, Network::IoSocketError::getIoSocketEagainError()};
     }
   }
   // Specify uint64_t since the latter length may not have the same type.
@@ -258,7 +248,7 @@ Api::IoCallUint64Result IoHandleImpl::recv(void* buffer, size_t length, int flag
   if (!(flags & MSG_PEEK)) {
     pending_received_data_.drain(max_bytes_to_read);
   }
-  return {max_bytes_to_read, Api::IoErrorPtr(nullptr, Network::IoSocketError::deleteIoError)};
+  return {max_bytes_to_read, Api::IoError::none()};
 }
 
 bool IoHandleImpl::supportsMmsg() const { return false; }
@@ -272,20 +262,42 @@ Api::SysCallIntResult IoHandleImpl::bind(Network::Address::InstanceConstSharedPt
 Api::SysCallIntResult IoHandleImpl::listen(int) { return makeInvalidSyscallResult(); }
 
 Network::IoHandlePtr IoHandleImpl::accept(struct sockaddr*, socklen_t*) {
-  NOT_IMPLEMENTED_GCOVR_EXCL_LINE;
+  ENVOY_BUG(false, "unsupported call to accept");
+  return nullptr;
 }
 
-Api::SysCallIntResult IoHandleImpl::connect(Network::Address::InstanceConstSharedPtr) {
-  // Buffered Io handle should always be considered as connected.
-  // Use write or read to determine if peer is closed.
-  return {0, 0};
+Api::SysCallIntResult IoHandleImpl::connect(Network::Address::InstanceConstSharedPtr address) {
+  if (peer_handle_ != nullptr) {
+    // Buffered Io handle should always be considered as connected unless the server peer cannot be
+    // found. Use write or read to determine if peer is closed.
+    return {0, 0};
+  } else {
+    ENVOY_LOG(debug, "user namespace handle {} connect to previously closed peer {}.",
+              static_cast<void*>(this), address->asStringView());
+    return Api::SysCallIntResult{-1, SOCKET_ERROR_INVAL};
+  }
 }
 
 Api::SysCallIntResult IoHandleImpl::setOption(int, int, const void*, socklen_t) {
   return makeInvalidSyscallResult();
 }
 
-Api::SysCallIntResult IoHandleImpl::getOption(int, int, void*, socklen_t*) {
+Api::SysCallIntResult IoHandleImpl::getOption(int level, int optname, void* optval,
+                                              socklen_t* optlen) {
+  // Check result of connect(). It is either connected or closed.
+  if (level == SOL_SOCKET && optname == SO_ERROR) {
+    if (peer_handle_ != nullptr) {
+      // The peer is valid at this comment. Consider it as connected.
+      *optlen = sizeof(int);
+      *static_cast<int*>(optval) = 0;
+      return Api::SysCallIntResult{0, 0};
+    } else {
+      // The peer is closed. Reset the option value to non-zero.
+      *optlen = sizeof(int);
+      *static_cast<int*>(optval) = SOCKET_ERROR_INVAL;
+      return Api::SysCallIntResult{0, 0};
+    }
+  }
   return makeInvalidSyscallResult();
 }
 
@@ -317,7 +329,8 @@ void IoHandleImpl::initializeFileEvent(Event::Dispatcher& dispatcher, Event::Fil
 Network::IoHandlePtr IoHandleImpl::duplicate() {
   // duplicate() is supposed to be used on listener io handle while this implementation doesn't
   // support listen.
-  NOT_IMPLEMENTED_GCOVR_EXCL_LINE;
+  ENVOY_BUG(false, "unsupported call to duplicate");
+  return nullptr;
 }
 
 void IoHandleImpl::activateFileEvents(uint32_t events) {
@@ -349,6 +362,30 @@ Api::SysCallIntResult IoHandleImpl::shutdown(int how) {
     write_shutdown_ = true;
   }
   return {0, 0};
+}
+
+void PassthroughStateImpl::initialize(
+    std::unique_ptr<envoy::config::core::v3::Metadata> metadata,
+    const StreamInfo::FilterState::Objects& filter_state_objects) {
+  ASSERT(state_ == State::Created);
+  metadata_ = std::move(metadata);
+  filter_state_objects_ = filter_state_objects;
+  state_ = State::Initialized;
+}
+void PassthroughStateImpl::mergeInto(envoy::config::core::v3::Metadata& metadata,
+                                     StreamInfo::FilterState& filter_state) {
+  ASSERT(state_ == State::Created || state_ == State::Initialized);
+  if (metadata_) {
+    metadata.MergeFrom(*metadata_);
+  }
+  for (const auto& object : filter_state_objects_) {
+    // This should not throw as stream info is new and filter objects are uniquely named.
+    filter_state.setData(object.name_, object.data_, object.state_type_,
+                         StreamInfo::FilterState::LifeSpan::Connection, object.stream_sharing_);
+  }
+  metadata_ = nullptr;
+  filter_state_objects_.clear();
+  state_ = State::Done;
 }
 } // namespace UserSpace
 } // namespace IoSocket

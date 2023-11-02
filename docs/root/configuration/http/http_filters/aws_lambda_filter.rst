@@ -4,14 +4,14 @@
 AWS Lambda
 ==========
 
+* This filter should be configured with the type URL ``type.googleapis.com/envoy.extensions.filters.http.aws_lambda.v3.Config``.
 * :ref:`v3 API reference <envoy_v3_api_msg_extensions.filters.http.aws_lambda.v3.Config>`
-* This filter should be configured with the name *envoy.filters.http.aws_lambda*.
 
 .. attention::
 
   The AWS Lambda filter is currently under active development.
 
-The HTTP AWS Lambda filter is used to trigger an AWS Lambda function from a standard HTTP/1.x or HTTP/2 request.
+The HTTP AWS Lambda filter is used to trigger an AWS Lambda function from a standard HTTP request.
 It supports a few options to control whether to pass through the HTTP request payload as is or to wrap it in a JSON
 schema.
 
@@ -22,24 +22,25 @@ If :ref:`payload_passthrough <envoy_v3_api_field_extensions.filters.http.aws_lam
 However, if :ref:`payload_passthrough <envoy_v3_api_field_extensions.filters.http.aws_lambda.v3.Config.payload_passthrough>`
 is set to ``false``, then the HTTP request is transformed to a JSON payload with the following schema:
 
-.. code-block::
+.. code-block:: json
+   :force:
 
     {
-        "rawPath": "/path/to/resource",
+        "raw_path": "/path/to/resource",
         "method": "GET|POST|HEAD|...",
         "headers": {"header-key": "header-value", ... },
-        "queryStringParameters": {"key": "value", ...},
+        "query_string_parameters": {"key": "value", ...},
         "body": "...",
-        "isBase64Encoded": true|false
+        "is_base64_encoded": true|false
     }
 
-- ``rawPath`` is the HTTP request resource path (including the query string)
+- ``raw_path`` is the HTTP request resource path (including the query string)
 - ``method`` is the HTTP request method. For example ``GET``, ``PUT``, etc.
 - ``headers`` are the HTTP request headers. If multiple headers share the same name, their values are
   coalesced into a single comma-separated value.
-- ``queryStringParameters`` are the HTTP request query string parameters. If multiple parameters share the same name,
-  the last one wins. That is, parameters are _not_ coalesced into a single value if they share the same key name.
-- ``body`` the body of the HTTP request is base64-encoded by the filter if the ``content-type`` header exists and is _not_ one of the following:
+- ``query_string_parameters`` are the HTTP request query string parameters. If multiple parameters share the same name,
+  the last one wins. That is, parameters are **not** coalesced into a single value if they share the same key name.
+- ``body`` the body of the HTTP request is base64-encoded by the filter if the ``content-type`` header exists and is **not** one of the following:
 
     -  text/*
     -  application/json
@@ -50,21 +51,22 @@ Otherwise, the body of HTTP request is added to the JSON payload as is.
 
 On the other end, the response of the Lambda function must conform to the following schema:
 
-.. code-block::
+.. code-block:: json
+   :force:
 
     {
-        "statusCode": ...
+        "status_code": ...
         "headers": {"header-key": "header-value", ... },
         "cookies": ["key1=value1; HttpOnly; ...", "key2=value2; Secure; ...", ...],
         "body": "...",
-        "isBase64Encoded": true|false
+        "is_base64_encoded": true|false
     }
 
-- The ``statusCode`` field is an integer used as the HTTP response code. If this key is missing, Envoy returns a ``200
+- The ``status_code`` field is an integer used as the HTTP response code. If this key is missing, Envoy returns a ``200
   OK``.
 - The ``headers`` are used as the HTTP response headers.
 - The ``cookies`` are used as ``Set-Cookie`` response headers. Unlike the request headers, cookies are _not_ part of the
-  response headers because the ``Set-Cookie`` header cannot contain more than one value per the `RFC`_. Therefore, Each
+  response headers because the ``Set-Cookie`` header cannot contain more than one value per the `RFC`_. Therefore, each
   key/value pair in this JSON array will translate to a single ``Set-Cookie`` header.
 - The ``body`` is base64-decoded if it is marked as base64-encoded and sent as the body of the HTTP response.
 
@@ -83,7 +85,7 @@ On the other end, the response of the Lambda function must conform to the follow
 The filter supports :ref:`per-filter configuration
 <envoy_v3_api_msg_extensions.filters.http.aws_lambda.v3.PerRouteConfig>`.
 
-If you use the per-filter configuration, the target cluster _must_ have the following metadata:
+If you use the per-filter configuration, the target cluster *must* have the following metadata:
 
 .. code-block:: yaml
 
@@ -137,7 +139,8 @@ in us-west-2:
 
 
 The filter can also be configured per virtual-host, route or weighted-cluster. In that case, the target cluster *must*
-have specific Lambda metadata.
+have specific Lambda metadata and target cluster's endpoint should point to a region where the Lambda function is present.
+
 
 .. code-block:: yaml
 
@@ -149,7 +152,7 @@ have specific Lambda metadata.
         envoy.filters.http.aws_lambda:
           "@type": type.googleapis.com/envoy.extensions.filters.http.aws_lambda.v3.PerRouteConfig
           invoke_config:
-            arn: "arn:aws:lambda:us-west-2:987654321:function:hello_envoy"
+            arn: "arn:aws:lambda:us-west-1:987654321:function:hello_envoy"
             payload_passthrough: false
 
 
@@ -174,7 +177,7 @@ An example with the Lambda metadata applied to a weighted-cluster:
         - endpoint:
             address:
               socket_address:
-                address: lambda.us-west-2.amazonaws.com
+                address: lambda.us-west-1.amazonaws.com
                 port_value: 443
     transport_socket:
       name: envoy.transport_sockets.tls
@@ -183,17 +186,18 @@ An example with the Lambda metadata applied to a weighted-cluster:
         sni: "*.amazonaws.com"
 
 
+.. include:: _include/aws_credentials.rst
+
 Statistics
 ----------
 
 The AWS Lambda filter outputs statistics in the *http.<stat_prefix>.aws_lambda.* namespace. The
-:ref:`stat prefix <envoy_api_field_config.filter.network.http_connection_manager.v2.HttpConnectionManager.stat_prefix>`
+| :ref:`stat prefix <envoy_v3_api_field_extensions.filters.network.http_connection_manager.v3.HttpConnectionManager.stat_prefix>`
 comes from the owning HTTP connection manager.
 
 .. csv-table::
   :header: Name, Type, Description
   :widths: 1, 1, 2
 
-  server_error, Counter, Total requests that returned invalid JSON response (see :ref:`payload_passthrough <envoy_api_msg_config.filter.http.aws_lambda.v2alpha.config>`)
-  upstream_rq_payload_size, Histogram, Size in bytes of the request after JSON-tranformation (if any).
-
+  server_error, Counter, Total requests that returned invalid JSON response (see :ref:`payload_passthrough <envoy_v3_api_msg_extensions.filters.http.aws_lambda.v3.Config>`)
+  upstream_rq_payload_size, Histogram, Size in bytes of the request after JSON-transformation (if any).

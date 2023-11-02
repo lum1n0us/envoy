@@ -9,18 +9,18 @@
 #include "envoy/config/listener/v3/listener.pb.h"
 #include "envoy/server/options.h"
 #include "envoy/server/process_context.h"
+#include "envoy/stats/histogram.h"
 #include "envoy/stats/stats.h"
 
-#include "common/common/assert.h"
-#include "common/common/lock_guard.h"
-#include "common/common/logger.h"
-#include "common/common/thread.h"
-#include "common/stats/allocator_impl.h"
-
-#include "server/drain_manager_impl.h"
-#include "server/listener_hooks.h"
-#include "server/options_impl.h"
-#include "server/server.h"
+#include "source/common/common/assert.h"
+#include "source/common/common/lock_guard.h"
+#include "source/common/common/logger.h"
+#include "source/common/common/thread.h"
+#include "source/common/stats/allocator_impl.h"
+#include "source/server/drain_manager_impl.h"
+#include "source/server/listener_hooks.h"
+#include "source/server/options_impl.h"
+#include "source/server/server.h"
 
 #include "test/integration/server_stats.h"
 #include "test/integration/tcp_dump.h"
@@ -47,13 +47,13 @@ createTestOptionsImpl(const std::string& config_path, const std::string& config_
                       uint32_t concurrency = 1,
                       std::chrono::seconds drain_time = std::chrono::seconds(1),
                       Server::DrainStrategy drain_strategy = Server::DrainStrategy::Gradual,
-                      bool v2_bootstrap = false);
+                      bool use_bootstrap_node_metadata = false);
 
 class TestComponentFactory : public ComponentFactory {
 public:
   Server::DrainManagerPtr createDrainManager(Server::Instance& server) override {
-    return Server::DrainManagerPtr{
-        new Server::DrainManagerImpl(server, envoy::config::listener::v3::Listener::MODIFY_ONLY)};
+    return Server::DrainManagerPtr{new Server::DrainManagerImpl(
+        server, envoy::config::listener::v3::Listener::MODIFY_ONLY, server.dispatcher())};
   }
   Runtime::LoaderPtr createRuntime(Server::Instance& server,
                                    Server::Configuration::Initial& config) override {
@@ -71,22 +71,18 @@ namespace Stats {
  */
 class TestScopeWrapper : public Scope {
 public:
-  TestScopeWrapper(Thread::MutexBasicLockable& lock, ScopePtr wrapped_scope)
-      : lock_(lock), wrapped_scope_(std::move(wrapped_scope)) {}
+  TestScopeWrapper(Thread::MutexBasicLockable& lock, ScopeSharedPtr wrapped_scope, Store& store)
+      : lock_(lock), wrapped_scope_(wrapped_scope), store_(store) {}
 
-  ScopePtr createScope(const std::string& name) override {
+  ScopeSharedPtr createScope(const std::string& name) override {
     Thread::LockGuard lock(lock_);
-    return ScopePtr{new TestScopeWrapper(lock_, wrapped_scope_->createScope(name))};
+    return std::make_shared<TestScopeWrapper>(lock_, wrapped_scope_->createScope(name), store_);
   }
 
-  ScopePtr scopeFromStatName(StatName name) override {
+  ScopeSharedPtr scopeFromStatName(StatName name) override {
     Thread::LockGuard lock(lock_);
-    return ScopePtr{new TestScopeWrapper(lock_, wrapped_scope_->scopeFromStatName(name))};
-  }
-
-  void deliverHistogramToSinks(const Histogram& histogram, uint64_t value) override {
-    Thread::LockGuard lock(lock_);
-    wrapped_scope_->deliverHistogramToSinks(histogram, value);
+    return std::make_shared<TestScopeWrapper>(lock_, wrapped_scope_->scopeFromStatName(name),
+                                              store_);
   }
 
   Counter& counterFromStatNameWithTags(const StatName& name,
@@ -111,10 +107,6 @@ public:
                                                StatNameTagVectorOptConstRef tags) override {
     Thread::LockGuard lock(lock_);
     return wrapped_scope_->textReadoutFromStatNameWithTags(name, tags);
-  }
-
-  NullGaugeImpl& nullGauge(const std::string& str) override {
-    return wrapped_scope_->nullGauge(str);
   }
 
   Counter& counterFromString(const std::string& name) override {
@@ -164,10 +156,14 @@ public:
   bool iterate(const IterateFn<TextReadout>& fn) const override {
     return wrapped_scope_->iterate(fn);
   }
+  StatName prefix() const override { return wrapped_scope_->prefix(); }
+  Store& store() override { return store_; }
+  const Store& constStore() const override { return store_; }
 
 private:
   Thread::MutexBasicLockable& lock_;
-  ScopePtr wrapped_scope_;
+  ScopeSharedPtr wrapped_scope_;
+  Store& store_;
 };
 
 // A counter which signals on a condition variable when it is incremented.
@@ -197,6 +193,7 @@ public:
   uint32_t use_count() const override { return counter_->use_count(); }
   StatName tagExtractedStatName() const override { return counter_->tagExtractedStatName(); }
   bool used() const override { return counter_->used(); }
+  bool hidden() const override { return counter_->hidden(); }
   SymbolTable& symbolTable() override { return counter_->symbolTable(); }
   const SymbolTable& constSymbolTable() const override { return counter_->constSymbolTable(); }
 
@@ -277,68 +274,63 @@ private:
  */
 class TestIsolatedStoreImpl : public StoreRoot {
 public:
-  // Stats::Scope
-  Counter& counterFromStatNameWithTags(const StatName& name,
-                                       StatNameTagVectorOptConstRef tags) override {
+  // Stats::Store
+  void forEachCounter(Stats::SizeFn f_size, StatFn<Counter> f_stat) const override {
     Thread::LockGuard lock(lock_);
-    return store_.counterFromStatNameWithTags(name, tags);
+    store_.forEachCounter(f_size, f_stat);
   }
-  Counter& counterFromString(const std::string& name) override {
+  void forEachGauge(Stats::SizeFn f_size, StatFn<Gauge> f_stat) const override {
     Thread::LockGuard lock(lock_);
-    return store_.counterFromString(name);
+    store_.forEachGauge(f_size, f_stat);
   }
-  ScopePtr createScope(const std::string& name) override {
+  void forEachTextReadout(Stats::SizeFn f_size, StatFn<TextReadout> f_stat) const override {
     Thread::LockGuard lock(lock_);
-    return ScopePtr{new TestScopeWrapper(lock_, store_.createScope(name))};
+    store_.forEachTextReadout(f_size, f_stat);
   }
-  ScopePtr scopeFromStatName(StatName name) override {
+  void forEachHistogram(Stats::SizeFn f_size, StatFn<ParentHistogram> f_stat) const override {
     Thread::LockGuard lock(lock_);
-    return ScopePtr{new TestScopeWrapper(lock_, store_.scopeFromStatName(name))};
+    store_.forEachHistogram(f_size, f_stat);
   }
-  void deliverHistogramToSinks(const Histogram&, uint64_t) override {}
-  Gauge& gaugeFromStatNameWithTags(const StatName& name, StatNameTagVectorOptConstRef tags,
-                                   Gauge::ImportMode import_mode) override {
+  void forEachScope(std::function<void(std::size_t)> f_size,
+                    StatFn<const Scope> f_scope) const override {
     Thread::LockGuard lock(lock_);
-    return store_.gaugeFromStatNameWithTags(name, tags, import_mode);
+    store_.forEachScope(f_size, f_scope);
   }
-  Gauge& gaugeFromString(const std::string& name, Gauge::ImportMode import_mode) override {
+  void forEachSinkedCounter(Stats::SizeFn f_size, StatFn<Counter> f_stat) const override {
     Thread::LockGuard lock(lock_);
-    return store_.gaugeFromString(name, import_mode);
+    store_.forEachSinkedCounter(f_size, f_stat);
   }
-  Histogram& histogramFromStatNameWithTags(const StatName& name, StatNameTagVectorOptConstRef tags,
-                                           Histogram::Unit unit) override {
+  void forEachSinkedGauge(Stats::SizeFn f_size, StatFn<Gauge> f_stat) const override {
     Thread::LockGuard lock(lock_);
-    return store_.histogramFromStatNameWithTags(name, tags, unit);
+    store_.forEachSinkedGauge(f_size, f_stat);
   }
-  NullGaugeImpl& nullGauge(const std::string& name) override { return store_.nullGauge(name); }
-  Histogram& histogramFromString(const std::string& name, Histogram::Unit unit) override {
+  void forEachSinkedTextReadout(Stats::SizeFn f_size, StatFn<TextReadout> f_stat) const override {
     Thread::LockGuard lock(lock_);
-    return store_.histogramFromString(name, unit);
+    store_.forEachSinkedTextReadout(f_size, f_stat);
   }
-  TextReadout& textReadoutFromStatNameWithTags(const StatName& name,
-                                               StatNameTagVectorOptConstRef tags) override {
+  void forEachSinkedHistogram(Stats::SizeFn f_size, StatFn<ParentHistogram> f_stat) const override {
     Thread::LockGuard lock(lock_);
-    return store_.textReadoutFromStatNameWithTags(name, tags);
+    store_.forEachSinkedHistogram(f_size, f_stat);
   }
-  TextReadout& textReadoutFromString(const std::string& name) override {
-    Thread::LockGuard lock(lock_);
-    return store_.textReadoutFromString(name);
+  void setSinkPredicates(std::unique_ptr<SinkPredicates>&& sink_predicates) override {
+    UNREFERENCED_PARAMETER(sink_predicates);
   }
-  CounterOptConstRef findCounter(StatName name) const override {
+  OptRef<SinkPredicates> sinkPredicates() override { return OptRef<SinkPredicates>{}; }
+  void deliverHistogramToSinks(const Histogram& histogram, uint64_t value) override {
     Thread::LockGuard lock(lock_);
-    return store_.findCounter(name);
+    store_.deliverHistogramToSinks(histogram, value);
   }
-  GaugeOptConstRef findGauge(StatName name) const override {
+  NullGaugeImpl& nullGauge() override { return store_.nullGauge(); }
+  NullCounterImpl& nullCounter() override { return store_.nullCounter(); }
+  ScopeSharedPtr rootScope() override {
     Thread::LockGuard lock(lock_);
-    return store_.findGauge(name);
+    if (lazy_default_scope_ == nullptr) {
+      lazy_default_scope_ = std::make_shared<TestScopeWrapper>(lock_, store_.rootScope(), *this);
+    }
+    return lazy_default_scope_;
   }
-  HistogramOptConstRef findHistogram(StatName name) const override {
-    Thread::LockGuard lock(lock_);
-    return store_.findHistogram(name);
-  }
-  TextReadoutOptConstRef findTextReadout(StatName name) const override {
-    Thread::LockGuard lock(lock_);
-    return store_.findTextReadout(name);
+  ConstScopeSharedPtr constRootScope() const override {
+    return const_cast<TestIsolatedStoreImpl*>(this)->rootScope();
   }
   const SymbolTable& constSymbolTable() const override { return store_.constSymbolTable(); }
   SymbolTable& symbolTable() override { return store_.symbolTable(); }
@@ -366,6 +358,10 @@ public:
   bool iterate(const IterateFn<Histogram>& fn) const override { return store_.iterate(fn); }
   bool iterate(const IterateFn<TextReadout>& fn) const override { return store_.iterate(fn); }
 
+  void extractAndAppendTags(StatName, StatNamePool&, StatNameTagVector&) override{};
+  void extractAndAppendTags(absl::string_view, StatNamePool&, StatNameTagVector&) override{};
+  const Stats::TagVector& fixedTags() override { CONSTRUCT_ON_FIRST_USE(Stats::TagVector); }
+
   // Stats::StoreRoot
   void addSink(Sink&) override {}
   void setTagProducer(TagProducerPtr&&) override {}
@@ -373,11 +369,15 @@ public:
   void setHistogramSettings(HistogramSettingsConstPtr&&) override {}
   void initializeThreading(Event::Dispatcher&, ThreadLocal::Instance&) override {}
   void shutdownThreading() override {}
-  void mergeHistograms(PostMergeCb) override {}
+  void mergeHistograms(PostMergeCb cb) override { merge_cb_ = cb; }
+
+  void runMergeCallback() { merge_cb_(); }
 
 private:
   mutable Thread::MutexBasicLockable lock_;
   IsolatedStoreImpl store_;
+  PostMergeCb merge_cb_;
+  ScopeSharedPtr lazy_default_scope_;
 };
 
 } // namespace Stats
@@ -399,15 +399,15 @@ public:
   static IntegrationTestServerPtr
   create(const std::string& config_path, const Network::Address::IpVersion version,
          std::function<void(IntegrationTestServer&)> on_server_ready_function,
-         std::function<void()> on_server_init_function, bool deterministic,
-         Event::TestTimeSystem& time_system, Api::Api& api,
-         bool defer_listener_finalization = false,
+         std::function<void()> on_server_init_function,
+         absl::optional<uint64_t> deterministic_value, Event::TestTimeSystem& time_system,
+         Api::Api& api, bool defer_listener_finalization = false,
          ProcessObjectOptRef process_object = absl::nullopt,
          Server::FieldValidationConfig validation_config = Server::FieldValidationConfig(),
          uint32_t concurrency = 1, std::chrono::seconds drain_time = std::chrono::seconds(1),
          Server::DrainStrategy drain_strategy = Server::DrainStrategy::Gradual,
          Buffer::WatermarkFactorySharedPtr watermark_factory = nullptr, bool use_real_stats = false,
-         bool v2_bootstrap = false);
+         bool use_bootstrap_node_metadata = false);
   // Note that the derived class is responsible for tearing down the server in its
   // destructor.
   ~IntegrationTestServer() override;
@@ -428,43 +428,76 @@ public:
   void setOnServerReadyCb(std::function<void(IntegrationTestServer&)> on_server_ready) {
     on_server_ready_cb_ = std::move(on_server_ready);
   }
-  void onRuntimeCreated() override {}
   void onWorkersStarted() override {}
 
   void start(const Network::Address::IpVersion version,
-             std::function<void()> on_server_init_function, bool deterministic,
-             bool defer_listener_finalization, ProcessObjectOptRef process_object,
-             Server::FieldValidationConfig validation_config, uint32_t concurrency,
-             std::chrono::seconds drain_time, Server::DrainStrategy drain_strategy,
-             Buffer::WatermarkFactorySharedPtr watermark_factory, bool v2_bootstrap);
+             std::function<void()> on_server_init_function,
+             absl::optional<uint64_t> deterministic_value, bool defer_listener_finalization,
+             ProcessObjectOptRef process_object, Server::FieldValidationConfig validation_config,
+             uint32_t concurrency, std::chrono::seconds drain_time,
+             Server::DrainStrategy drain_strategy,
+             Buffer::WatermarkFactorySharedPtr watermark_factory, bool use_bootstrap_node_metadata);
 
   void waitForCounterEq(const std::string& name, uint64_t value,
-                        std::chrono::milliseconds timeout = std::chrono::milliseconds::zero(),
+                        std::chrono::milliseconds timeout = TestUtility::DefaultTimeout,
                         Event::Dispatcher* dispatcher = nullptr) override {
     ASSERT_TRUE(
         TestUtility::waitForCounterEq(statStore(), name, value, time_system_, timeout, dispatcher));
   }
 
-  void
-  waitForCounterGe(const std::string& name, uint64_t value,
-                   std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) override {
+  void waitForCounterGe(const std::string& name, uint64_t value,
+                        std::chrono::milliseconds timeout = TestUtility::DefaultTimeout) override {
     ASSERT_TRUE(TestUtility::waitForCounterGe(statStore(), name, value, time_system_, timeout));
   }
 
-  void
-  waitForGaugeEq(const std::string& name, uint64_t value,
-                 std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) override {
+  void waitForGaugeEq(const std::string& name, uint64_t value,
+                      std::chrono::milliseconds timeout = TestUtility::DefaultTimeout) override {
     ASSERT_TRUE(TestUtility::waitForGaugeEq(statStore(), name, value, time_system_, timeout));
   }
 
-  void
-  waitForGaugeGe(const std::string& name, uint64_t value,
-                 std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) override {
+  void waitForGaugeGe(const std::string& name, uint64_t value,
+                      std::chrono::milliseconds timeout = TestUtility::DefaultTimeout) override {
     ASSERT_TRUE(TestUtility::waitForGaugeGe(statStore(), name, value, time_system_, timeout));
   }
 
   void waitForCounterExists(const std::string& name) override {
     notifyingStatsAllocator().waitForCounterExists(name);
+  }
+
+  void waitForCounterNonexistent(const std::string& name,
+                                 std::chrono::milliseconds timeout) override {
+    Event::TestTimeSystem::RealTimeBound bound(timeout);
+    while (TestUtility::findCounter(statStore(), name) != nullptr) {
+      time_system_.advanceTimeWait(std::chrono::milliseconds(10));
+      ASSERT_FALSE(!bound.withinBound())
+          << "timed out waiting for counter " << name << " to not exist.";
+    }
+  }
+
+  void waitForProactiveOverloadResourceUsageEq(
+      const Server::OverloadProactiveResourceName resource_name, int64_t value,
+      Event::Dispatcher& dispatcher,
+      std::chrono::milliseconds timeout = TestUtility::DefaultTimeout) {
+    ASSERT_TRUE(TestUtility::waitForProactiveOverloadResourceUsageEq(
+        overloadState(), resource_name, value, time_system_, dispatcher, timeout));
+  }
+
+  // TODO(#17956): Add Gauge type to NotifyingAllocator and adopt it in this method.
+  void waitForGaugeDestroyed(const std::string& name) override {
+    ASSERT_TRUE(TestUtility::waitForGaugeDestroyed(statStore(), name, time_system_));
+  }
+
+  void waitUntilHistogramHasSamples(
+      const std::string& name,
+      std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) override {
+    waitForNumHistogramSamplesGe(name, 1, timeout);
+  }
+
+  void waitForNumHistogramSamplesGe(
+      const std::string& name, uint64_t sample_count,
+      std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) override {
+    ASSERT_TRUE(TestUtility::waitForNumHistogramSamplesGe(
+        statStore(), name, sample_count, time_system_, server().dispatcher(), timeout));
   }
 
   Stats::CounterSharedPtr counter(const std::string& name) override {
@@ -479,9 +512,17 @@ public:
     return TestUtility::findGauge(statStore(), name);
   }
 
+  Stats::ParentHistogramSharedPtr histogram(const std::string& name) {
+    return TestUtility::findHistogram(statStore(), name);
+  }
+
   std::vector<Stats::CounterSharedPtr> counters() override { return statStore().counters(); }
 
   std::vector<Stats::GaugeSharedPtr> gauges() override { return statStore().gauges(); }
+
+  std::vector<Stats::ParentHistogramSharedPtr> histograms() override {
+    return statStore().histograms();
+  }
 
   // ListenerHooks
   void onWorkerListenerAdded() override;
@@ -489,8 +530,8 @@ public:
 
   // Server::ComponentFactory
   Server::DrainManagerPtr createDrainManager(Server::Instance& server) override {
-    drain_manager_ =
-        new Server::DrainManagerImpl(server, envoy::config::listener::v3::Listener::MODIFY_ONLY);
+    drain_manager_ = new Server::DrainManagerImpl(
+        server, envoy::config::listener::v3::Listener::MODIFY_ONLY, server.dispatcher());
     return Server::DrainManagerPtr{drain_manager_};
   }
   Runtime::LoaderPtr createRuntime(Server::Instance& server,
@@ -501,6 +542,7 @@ public:
   // Should not be called until createAndRunEnvoyServer() is called.
   virtual Server::Instance& server() PURE;
   virtual Stats::Store& statStore() PURE;
+  virtual Server::ThreadLocalOverloadState& overloadState() PURE;
   virtual Network::Address::InstanceConstSharedPtr adminAddress() PURE;
   virtual Stats::NotifyingAllocatorImpl& notifyingStatsAllocator() PURE;
   void useAdminInterfaceToQuit(bool use) { use_admin_interface_to_quit_ = use; }
@@ -532,11 +574,13 @@ private:
   /**
    * Runs the real server on a thread.
    */
-  void threadRoutine(const Network::Address::IpVersion version, bool deterministic,
+  void threadRoutine(const Network::Address::IpVersion version,
+                     absl::optional<uint64_t> deterministic_value,
                      ProcessObjectOptRef process_object,
                      Server::FieldValidationConfig validation_config, uint32_t concurrency,
                      std::chrono::seconds drain_time, Server::DrainStrategy drain_strategy,
-                     Buffer::WatermarkFactorySharedPtr watermark_factory, bool v2_bootstrap);
+                     Buffer::WatermarkFactorySharedPtr watermark_factory,
+                     bool use_bootstrap_node_metadata);
 
   Event::TestTimeSystem& time_system_;
   Api::Api& api_;
@@ -570,6 +614,11 @@ public:
     RELEASE_ASSERT(stat_store_ != nullptr, "");
     return *stat_store_;
   }
+  Server::ThreadLocalOverloadState& overloadState() override {
+    RELEASE_ASSERT(server_ != nullptr, "");
+    return server_->overloadManager().getThreadLocalOverloadState();
+  }
+
   Network::Address::InstanceConstSharedPtr adminAddress() override { return admin_address_; }
 
   Stats::NotifyingAllocatorImpl& notifyingStatsAllocator() override {

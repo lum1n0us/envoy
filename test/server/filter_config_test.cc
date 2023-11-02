@@ -1,6 +1,6 @@
 #include "envoy/server/filter_config.h"
 
-#include "extensions/filters/http/common/pass_through_filter.h"
+#include "source/extensions/filters/http/common/pass_through_filter.h"
 
 #include "test/mocks/server/factory_context.h"
 
@@ -39,7 +39,7 @@ public:
   }
 
   std::string name() const override { return "envoy.test.http_filter"; }
-  std::string configType() override { return ""; };
+  std::set<std::string> configTypes() override { return {}; };
 };
 
 TEST(NamedHttpFilterConfigFactoryTest, CreateFilterFactory) {

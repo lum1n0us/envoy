@@ -10,14 +10,15 @@
 #include "envoy/config/subscription.h"
 #include "envoy/extensions/filters/network/http_connection_manager/v3/http_connection_manager.pb.h"
 #include "envoy/router/route_config_provider_manager.h"
+#include "envoy/router/scopes.h"
 #include "envoy/service/discovery/v3/discovery.pb.h"
 #include "envoy/stats/scope.h"
 
-#include "common/config/config_provider_impl.h"
-#include "common/config/subscription_base.h"
-#include "common/init/manager_impl.h"
-#include "common/router/rds_impl.h"
-#include "common/router/scoped_config_impl.h"
+#include "source/common/config/config_provider_impl.h"
+#include "source/common/config/subscription_base.h"
+#include "source/common/init/manager_impl.h"
+#include "source/common/router/rds_impl.h"
+#include "source/common/router/scoped_config_impl.h"
 
 namespace Envoy {
 namespace Router {
@@ -33,6 +34,12 @@ Envoy::Config::ConfigProviderPtr create(
     Server::Configuration::ServerFactoryContext& factory_context, Init::Manager& init_manager,
     const std::string& stat_prefix,
     Envoy::Config::ConfigProviderManager& scoped_routes_config_provider_manager);
+
+// If enabled in the HttpConnectionManager config, returns a ConfigProvider for scoped routing
+// configuration.
+ScopeKeyBuilderPtr createScopeKeyBuilder(
+    const envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager&
+        config);
 
 } // namespace ScopedRoutesConfigProviderUtil
 
@@ -51,8 +58,7 @@ public:
                                    Server::Configuration::ServerFactoryContext& factory_context,
                                    ScopedRoutesConfigProviderManager& config_provider_manager,
                                    envoy::config::core::v3::ConfigSource rds_config_source,
-                                   envoy::extensions::filters::network::http_connection_manager::
-                                       v3::ScopedRoutes::ScopeKeyBuilder scope_key_builder);
+                                   const OptionalHttpFilters& optional_http_filters);
 
   ~InlineScopedRoutesConfigProvider() override = default;
 
@@ -61,9 +67,9 @@ public:
   // Envoy::Config::ConfigProvider
   Envoy::Config::ConfigProvider::ConfigProtoVector getConfigProtos() const override {
     Envoy::Config::ConfigProvider::ConfigProtoVector out_protos;
-    std::for_each(config_protos_.begin(), config_protos_.end(),
-                  [&out_protos](const std::unique_ptr<const Protobuf::Message>& message) {
-                    out_protos.push_back(message.get());
+    std::for_each(scopes_.begin(), scopes_.end(),
+                  [&out_protos](const ScopedRouteInfoConstSharedPtr& scope) {
+                    out_protos.push_back(&scope->configProto());
                   });
     return out_protos;
   }
@@ -73,8 +79,8 @@ public:
 
 private:
   const std::string name_;
+  const std::vector<ScopedRouteInfoConstSharedPtr> scopes_;
   ConfigConstSharedPtr config_;
-  const std::vector<std::unique_ptr<const Protobuf::Message>> config_protos_;
   const envoy::config::core::v3::ConfigSource rds_config_source_;
 };
 
@@ -86,6 +92,7 @@ private:
   COUNTER(config_reload)                                                                           \
   COUNTER(update_empty)                                                                            \
   GAUGE(all_scopes, Accumulate)                                                                    \
+  GAUGE(config_reload_time_ms, NeverImport)                                                        \
   GAUGE(on_demand_scopes, Accumulate)                                                              \
   GAUGE(active_scopes, Accumulate)
 
@@ -103,18 +110,16 @@ struct ScopedRdsStats {
 // A scoped RDS subscription to be used with the dynamic scoped RDS ConfigProvider.
 class ScopedRdsConfigSubscription
     : public Envoy::Config::DeltaConfigSubscriptionInstance,
-      Envoy::Config::SubscriptionBase<envoy::config::route::v3::ScopedRouteConfiguration> {
+      public Envoy::Config::SubscriptionBase<envoy::config::route::v3::ScopedRouteConfiguration> {
 public:
   using ScopedRouteConfigurationMap =
       std::map<std::string, envoy::config::route::v3::ScopedRouteConfiguration>;
 
   ScopedRdsConfigSubscription(
       const envoy::extensions::filters::network::http_connection_manager::v3::ScopedRds& scoped_rds,
-      const uint64_t manager_identifier, const std::string& name,
-      const envoy::extensions::filters::network::http_connection_manager::v3::ScopedRoutes::
-          ScopeKeyBuilder& scope_key_builder,
-      Server::Configuration::ServerFactoryContext& factory_context, const std::string& stat_prefix,
-      envoy::config::core::v3::ConfigSource rds_config_source,
+      const OptionalHttpFilters& optional_http_filters, const uint64_t manager_identifier,
+      const std::string& name, Server::Configuration::ServerFactoryContext& factory_context,
+      const std::string& stat_prefix, envoy::config::core::v3::ConfigSource rds_config_source,
       RouteConfigProviderManager& route_config_provider_manager,
       ScopedRoutesConfigProviderManager& config_provider_manager);
 
@@ -150,7 +155,7 @@ private:
         parent_.stats_.on_demand_scopes_.dec();
       }
     }
-    ConfigConstSharedPtr routeConfig() { return route_provider_->config(); }
+    ConfigConstSharedPtr routeConfig() { return route_provider_->configCast(); }
 
     void addOnDemandUpdateCallback(std::function<void()> callback);
 
@@ -179,9 +184,11 @@ private:
 
   // Adds or updates scopes, create a new RDS provider for each resource, if an exception is thrown
   // during updating, the exception message is collected via the exception messages vector.
-  // Returns true if any scope updated, false otherwise.
-  bool addOrUpdateScopes(const std::vector<Envoy::Config::DecodedResourceRef>& resources,
-                         Init::Manager& init_manager, const std::string& version_info);
+  // Returns a failed status if the operation was unsuccessful. If successful,
+  // returns a boolean indicating if any scopes were applied.
+  absl::StatusOr<bool>
+  addOrUpdateScopes(const std::vector<Envoy::Config::DecodedResourceRef>& resources,
+                    Init::Manager& init_manager, const std::string& version_info);
   // Removes given scopes from the managed set of scopes.
   // Returns a list of to be removed helpers which is temporally held in the onConfigUpdate method,
   // to make sure new scopes sharing the same RDS source configs could reuse the subscriptions.
@@ -203,20 +210,19 @@ private:
   // Envoy::Config::SubscriptionCallbacks
 
   // NOTE: both delta form and state-of-the-world form onConfigUpdate(resources, version_info) will
-  // throw an EnvoyException on any error and essentially reject an update.
-  void onConfigUpdate(const std::vector<Envoy::Config::DecodedResourceRef>& resources,
-                      const std::string& version_info) override;
-  void onConfigUpdate(const std::vector<Envoy::Config::DecodedResourceRef>& added_resources,
-                      const Protobuf::RepeatedPtrField<std::string>& removed_resources,
-                      const std::string& system_version_info) override;
+  // throw an EnvoyException or return failure on any error and essentially reject an update.
+  absl::Status onConfigUpdate(const std::vector<Envoy::Config::DecodedResourceRef>& resources,
+                              const std::string& version_info) override;
+  absl::Status onConfigUpdate(const std::vector<Envoy::Config::DecodedResourceRef>& added_resources,
+                              const Protobuf::RepeatedPtrField<std::string>& removed_resources,
+                              const std::string& system_version_info) override;
   void onConfigUpdateFailed(Envoy::Config::ConfigUpdateFailureReason reason,
                             const EnvoyException*) override {
     ASSERT(Envoy::Config::ConfigUpdateFailureReason::ConnectionFailure != reason);
     DeltaConfigSubscriptionInstance::onConfigUpdateFailed();
   }
   // Propagate RDS updates to ScopeConfigImpl in workers.
-  void onRdsConfigUpdate(const std::string& scope_name,
-                         RdsRouteConfigSubscription& rds_subscription);
+  void onRdsConfigUpdate(const std::string& scope_name, ConfigConstSharedPtr new_rds_config);
 
   // ScopedRouteInfo by scope name.
   ScopedRouteMap scoped_route_map_;
@@ -225,11 +231,9 @@ private:
   Server::Configuration::ServerFactoryContext& factory_context_;
   const std::string name_;
   // Stats must outlive subscription.
-  Stats::ScopePtr scope_;
+  Stats::ScopeSharedPtr scope_;
   ScopedRdsStats stats_;
   Envoy::Config::SubscriptionPtr subscription_;
-  const envoy::extensions::filters::network::http_connection_manager::v3::ScopedRoutes::
-      ScopeKeyBuilder scope_key_builder_;
   const envoy::config::core::v3::ConfigSource rds_config_source_;
   const std::string stat_prefix_;
   RouteConfigProviderManager& route_config_provider_manager_;
@@ -238,6 +242,7 @@ private:
   absl::flat_hash_map<std::string, RdsRouteConfigProviderHelperPtr> route_provider_by_scope_;
   // A map of (hash, scope-name), used to detect the key conflict between scopes.
   absl::flat_hash_map<uint64_t, std::string> scope_name_by_hash_;
+  const OptionalHttpFilters optional_http_filters_;
 };
 
 using ScopedRdsConfigSubscriptionSharedPtr = std::shared_ptr<ScopedRdsConfigSubscription>;
@@ -265,14 +270,15 @@ public:
 class ScopedRoutesConfigProviderManager : public Envoy::Config::ConfigProviderManagerImplBase {
 public:
   ScopedRoutesConfigProviderManager(
-      Server::Admin& admin, Router::RouteConfigProviderManager& route_config_provider_manager)
+      OptRef<Server::Admin> admin,
+      Router::RouteConfigProviderManager& route_config_provider_manager)
       : Envoy::Config::ConfigProviderManagerImplBase(admin, "route_scopes"),
         route_config_provider_manager_(route_config_provider_manager) {}
 
   ~ScopedRoutesConfigProviderManager() override = default;
 
   // Envoy::Config::ConfigProviderManagerImplBase
-  ProtobufTypes::MessagePtr dumpConfigs() const override;
+  ProtobufTypes::MessagePtr dumpConfigs(const Matchers::StringMatcher& name_matcher) const override;
 
   // Envoy::Config::ConfigProviderManager
   Envoy::Config::ConfigProviderPtr
@@ -283,17 +289,15 @@ public:
   Envoy::Config::ConfigProviderPtr
   createStaticConfigProvider(const Protobuf::Message&, Server::Configuration::ServerFactoryContext&,
                              const Envoy::Config::ConfigProviderManager::OptionalArg&) override {
-    ASSERT(false,
-           "SRDS supports delta updates and requires the use of the createStaticConfigProvider() "
-           "overload that accepts a config proto set as an argument.");
-    NOT_REACHED_GCOVR_EXCL_LINE;
+    PANIC("SRDS supports delta updates and requires the use of the createStaticConfigProvider() "
+          "overload that accepts a config proto set as an argument.");
   }
   Envoy::Config::ConfigProviderPtr createStaticConfigProvider(
       std::vector<std::unique_ptr<const Protobuf::Message>>&& config_protos,
       Server::Configuration::ServerFactoryContext& factory_context,
       const Envoy::Config::ConfigProviderManager::OptionalArg& optarg) override;
 
-  RouteConfigProviderManager& routeConfigProviderPanager() {
+  RouteConfigProviderManager& routeConfigProviderManager() {
     return route_config_provider_manager_;
   }
 
@@ -312,15 +316,13 @@ public:
   ScopedRoutesConfigProviderManagerOptArg(
       std::string scoped_routes_name,
       const envoy::config::core::v3::ConfigSource& rds_config_source,
-      const envoy::extensions::filters::network::http_connection_manager::v3::ScopedRoutes::
-          ScopeKeyBuilder& scope_key_builder)
+      const OptionalHttpFilters& optional_http_filters)
       : scoped_routes_name_(std::move(scoped_routes_name)), rds_config_source_(rds_config_source),
-        scope_key_builder_(scope_key_builder) {}
+        optional_http_filters_(optional_http_filters) {}
 
   const std::string scoped_routes_name_;
   const envoy::config::core::v3::ConfigSource& rds_config_source_;
-  const envoy::extensions::filters::network::http_connection_manager::v3::ScopedRoutes::
-      ScopeKeyBuilder& scope_key_builder_;
+  const OptionalHttpFilters& optional_http_filters_;
 };
 
 } // namespace Router

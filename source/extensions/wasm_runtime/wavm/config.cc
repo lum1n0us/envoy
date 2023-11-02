@@ -1,6 +1,6 @@
 #include "envoy/registry/registry.h"
 
-#include "extensions/common/wasm/wasm_runtime_factory.h"
+#include "source/extensions/common/wasm/wasm_runtime_factory.h"
 
 #include "include/proxy-wasm/wavm.h"
 
@@ -13,10 +13,10 @@ class WavmRuntimeFactory : public WasmRuntimeFactory {
 public:
   WasmVmPtr createWasmVm() override { return proxy_wasm::createWavmVm(); }
 
-  absl::string_view name() override { return "envoy.wasm.runtime.wavm"; }
+  std::string name() const override { return "envoy.wasm.runtime.wavm"; }
 };
 
-#if defined(ENVOY_WASM_WAVM)
+#if defined(PROXY_WASM_HAS_RUNTIME_WAVM)
 REGISTER_FACTORY(WavmRuntimeFactory, WasmRuntimeFactory);
 #endif
 

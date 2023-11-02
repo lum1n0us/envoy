@@ -1,4 +1,4 @@
-#include "extensions/filters/http/aws_lambda/aws_lambda_filter.h"
+#include "source/extensions/filters/http/aws_lambda/aws_lambda_filter.h"
 
 #include <string>
 #include <vector>
@@ -8,20 +8,17 @@
 #include "envoy/http/header_map.h"
 #include "envoy/upstream/upstream.h"
 
-#include "common/buffer/buffer_impl.h"
-#include "common/common/base64.h"
-#include "common/common/fmt.h"
-#include "common/common/hex.h"
-#include "common/crypto/utility.h"
-#include "common/http/headers.h"
-#include "common/http/utility.h"
-#include "common/protobuf/message_validator_impl.h"
-#include "common/protobuf/utility.h"
-#include "common/singleton/const_singleton.h"
-
+#include "source/common/buffer/buffer_impl.h"
+#include "source/common/common/base64.h"
+#include "source/common/common/fmt.h"
+#include "source/common/common/hex.h"
+#include "source/common/crypto/utility.h"
+#include "source/common/http/headers.h"
+#include "source/common/http/utility.h"
+#include "source/common/protobuf/message_validator_impl.h"
+#include "source/common/protobuf/utility.h"
+#include "source/common/singleton/const_singleton.h"
 #include "source/extensions/filters/http/aws_lambda/request_response.pb.validate.h"
-
-#include "extensions/filters/http/well_known_names.h"
 
 #include "absl/strings/numbers.h"
 #include "absl/strings/string_view.h"
@@ -44,10 +41,10 @@ namespace {
 constexpr auto filter_metadata_key = "com.amazonaws.lambda";
 constexpr auto egress_gateway_metadata_key = "egress_gateway";
 
-void setLambdaHeaders(Http::RequestHeaderMap& headers, absl::string_view function_name,
+void setLambdaHeaders(Http::RequestHeaderMap& headers, const absl::optional<Arn>& arn,
                       InvocationMode mode) {
   headers.setMethod(Http::Headers::get().MethodValues.Post);
-  headers.setPath(fmt::format("/2015-03-31/functions/{}/invocations", function_name));
+  headers.setPath(fmt::format("/2015-03-31/functions/{}/invocations", arn->arn()));
   if (mode == InvocationMode::Synchronous) {
     headers.setReference(LambdaFilterNames::get().InvocationTypeHeader, "RequestResponse");
   } else {
@@ -120,12 +117,8 @@ Filter::Filter(const FilterSettings& settings, const FilterStats& stats,
     : settings_(settings), stats_(stats), sigv4_signer_(sigv4_signer) {}
 
 absl::optional<FilterSettings> Filter::getRouteSpecificSettings() const {
-  if (!decoder_callbacks_->route() || !decoder_callbacks_->route()->routeEntry()) {
-    return absl::nullopt;
-  }
-  const auto* route_entry = decoder_callbacks_->route()->routeEntry();
-  const auto* settings = route_entry->mostSpecificPerFilterConfigTyped<FilterSettings>(
-      HttpFilterNames::get().AwsLambda);
+  const auto* settings =
+      Http::Utility::resolveMostSpecificPerFilterConfig<FilterSettings>(decoder_callbacks_);
   if (!settings) {
     return absl::nullopt;
   }
@@ -164,8 +157,8 @@ Http::FilterHeadersStatus Filter::decodeHeaders(Http::RequestHeaderMap& headers,
   }
 
   if (payload_passthrough_) {
-    setLambdaHeaders(headers, arn_->functionName(), invocation_mode_);
-    sigv4_signer_->sign(headers);
+    setLambdaHeaders(headers, arn_, invocation_mode_);
+    sigv4_signer_->signEmptyPayload(headers, arn_->region());
     return Http::FilterHeadersStatus::Continue;
   }
 
@@ -173,12 +166,12 @@ Http::FilterHeadersStatus Filter::decodeHeaders(Http::RequestHeaderMap& headers,
   jsonizeRequest(headers, nullptr, json_buf);
   // We must call setLambdaHeaders *after* the JSON transformation of the request. That way we
   // reflect the actual incoming request headers instead of the overwritten ones.
-  setLambdaHeaders(headers, arn_->functionName(), invocation_mode_);
+  setLambdaHeaders(headers, arn_, invocation_mode_);
   headers.setContentLength(json_buf.length());
   headers.setReferenceContentType(Http::Headers::get().ContentTypeValues.Json);
   auto& hashing_util = Envoy::Common::Crypto::UtilitySingleton::get();
   const auto hash = Hex::encode(hashing_util.getSha256Digest(json_buf));
-  sigv4_signer_->sign(headers, hash);
+  sigv4_signer_->sign(headers, hash, arn_->region());
   decoder_callbacks_->addDecodedData(json_buf, false);
   return Http::FilterHeadersStatus::Continue;
 }
@@ -233,9 +226,9 @@ Http::FilterDataStatus Filter::decodeData(Buffer::Instance& data, bool end_strea
     request_headers_->setReferenceContentType(Http::Headers::get().ContentTypeValues.Json);
   }
 
-  setLambdaHeaders(*request_headers_, arn_->functionName(), invocation_mode_);
+  setLambdaHeaders(*request_headers_, arn_, invocation_mode_);
   const auto hash = Hex::encode(hashing_util.getSha256Digest(decoding_buffer));
-  sigv4_signer_->sign(*request_headers_, hash);
+  sigv4_signer_->sign(*request_headers_, hash, arn_->region());
   stats().upstream_rq_payload_size_.recordValue(decoding_buffer.length());
   return Http::FilterDataStatus::Continue;
 }
@@ -319,10 +312,11 @@ void Filter::dejsonizeResponse(Http::ResponseHeaderMap& headers, const Buffer::I
                                Buffer::Instance& body) {
   using source::extensions::filters::http::aws_lambda::Response;
   Response json_resp;
-  try {
+  TRY_NEEDS_AUDIT {
     MessageUtil::loadFromJson(json_buf.toString(), json_resp,
                               ProtobufMessage::getNullValidationVisitor());
-  } catch (EnvoyException& ex) {
+  }
+  END_TRY catch (EnvoyException& ex) {
     // We would only get here if all of the following are true:
     // 1- Passthrough is set to false
     // 2- Lambda returned a 200 OK
@@ -332,6 +326,10 @@ void Filter::dejsonizeResponse(Http::ResponseHeaderMap& headers, const Buffer::I
     stats().server_error_.inc();
     return;
   }
+
+  // Use JSON as the default content-type. If the response headers have a different content-type
+  // set, that will be used instead.
+  headers.setReferenceContentType(Http::Headers::get().ContentTypeValues.Json);
 
   for (auto&& kv : json_resp.headers()) {
     // ignore H2 pseudo-headers (if any)
@@ -348,7 +346,6 @@ void Filter::dejsonizeResponse(Http::ResponseHeaderMap& headers, const Buffer::I
   if (json_resp.status_code() != 0) {
     headers.setStatus(json_resp.status_code());
   }
-  headers.setReferenceContentType(Http::Headers::get().ContentTypeValues.Json);
   if (!json_resp.body().empty()) {
     if (json_resp.is_base64_encoded()) {
       body.add(Base64::decode(json_resp.body()));
@@ -383,10 +380,10 @@ absl::optional<Arn> parseArn(absl::string_view arn) {
     std::string versioned_function_name = std::string(function_name);
     versioned_function_name.push_back(':');
     versioned_function_name += std::string(parts[7]);
-    return Arn{partition, service, region, account_id, resource_type, versioned_function_name};
+    return Arn{arn, partition, service, region, account_id, resource_type, versioned_function_name};
   }
 
-  return Arn{partition, service, region, account_id, resource_type, function_name};
+  return Arn{arn, partition, service, region, account_id, resource_type, function_name};
 }
 
 FilterStats generateStats(const std::string& prefix, Stats::Scope& scope) {

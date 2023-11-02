@@ -2,7 +2,7 @@
 #include "envoy/extensions/filters/http/fault/v3/fault.pb.validate.h"
 #include "envoy/type/v3/percent.pb.h"
 
-#include "extensions/filters/http/fault/config.h"
+#include "source/extensions/filters/http/fault/config.h"
 
 #include "test/extensions/filters/http/fault/utility.h"
 #include "test/mocks/server/factory_context.h"
@@ -28,6 +28,8 @@ TEST(FaultFilterConfigTest, ValidateFail) {
 
 TEST(FaultFilterConfigTest, FaultFilterCorrectJson) {
   const std::string yaml_string = R"EOF(
+  filter_metadata:
+    hello: "world"
   delay:
     percentage:
       numerator: 100
@@ -42,6 +44,28 @@ TEST(FaultFilterConfigTest, FaultFilterCorrectJson) {
   Http::MockFilterChainFactoryCallbacks filter_callback;
   EXPECT_CALL(filter_callback, addStreamFilter(_));
   cb(filter_callback);
+}
+
+TEST(FaultFilterConfigTest, FaultFilterCorrectJsonWithServerContext) {
+  const std::string yaml_string = R"EOF(
+  filter_metadata:
+    hello: "world"
+  delay:
+    percentage:
+      numerator: 100
+      denominator: HUNDRED
+    fixed_delay: 5s
+  )EOF";
+
+  envoy::extensions::filters::http::fault::v3::HTTPFault config;
+  TestUtility::loadFromYamlAndValidate(yaml_string, config);
+  testing::NiceMock<Server::Configuration::MockServerFactoryContext> context;
+  FaultFilterFactory factory;
+  Http::FilterFactoryCb cb =
+      factory.createFilterFactoryFromProtoWithServerContext(config, "stats", context);
+  Http::MockFilterChainFactoryCallbacks filter_callbacks;
+  EXPECT_CALL(filter_callbacks, addStreamFilter(_));
+  cb(filter_callbacks);
 }
 
 TEST(FaultFilterConfigTest, FaultFilterCorrectProto) {
@@ -67,16 +91,6 @@ TEST(FaultFilterConfigTest, FaultFilterEmptyProto) {
   Http::MockFilterChainFactoryCallbacks filter_callback;
   EXPECT_CALL(filter_callback, addStreamFilter(_));
   cb(filter_callback);
-}
-
-// Test that the deprecated extension name still functions.
-TEST(FaultFilterConfigTest, DEPRECATED_FEATURE_TEST(DeprecatedExtensionFilterName)) {
-  const std::string deprecated_name = "envoy.fault";
-
-  ASSERT_NE(
-      nullptr,
-      Registry::FactoryRegistry<Server::Configuration::NamedHttpFilterConfigFactory>::getFactory(
-          deprecated_name));
 }
 
 } // namespace

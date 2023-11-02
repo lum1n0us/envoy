@@ -1,6 +1,6 @@
 # DO NOT LOAD THIS FILE. Targets from this file should be considered private
 # and not used outside of the @envoy//bazel package.
-load(":envoy_select.bzl", "envoy_select_enable_http3", "envoy_select_google_grpc", "envoy_select_hot_restart")
+load(":envoy_select.bzl", "envoy_select_admin_html", "envoy_select_disable_exceptions", "envoy_select_disable_logging", "envoy_select_google_grpc", "envoy_select_hot_restart", "envoy_select_signal_trace", "envoy_select_static_extension_registration")
 
 # Compute the final copts based on various options.
 def envoy_copts(repository, test = False):
@@ -15,6 +15,7 @@ def envoy_copts(repository, test = False):
         "-Wformat-security",
         "-Wvla",
         "-Wno-deprecated-declarations",
+        "-Wreturn-type",
     ]
 
     # Windows options for cleanest service compilation;
@@ -50,9 +51,9 @@ def envoy_copts(repository, test = False):
                # debugging info detailing some 1600 test binaries would be wasteful.
                # targets listed in order from generic to increasing specificity.
                # Bazel adds an implicit -DNDEBUG for opt targets.
-               repository + "//bazel:opt_build": [] if test else ["-ggdb3", "-gsplit-dwarf"],
+               repository + "//bazel:opt_build": [] if test else ["-ggdb3"],
                repository + "//bazel:fastbuild_build": [],
-               repository + "//bazel:dbg_build": ["-ggdb3", "-gsplit-dwarf"],
+               repository + "//bazel:dbg_build": ["-ggdb3"],
                repository + "//bazel:windows_opt_build": [] if test else ["-Z7"],
                repository + "//bazel:windows_fastbuild_build": [],
                repository + "//bazel:windows_dbg_build": [],
@@ -76,6 +77,10 @@ def envoy_copts(repository, test = False):
                repository + "//bazel:clang_cl_build": ["-Wno-unused-result"] if test else [],
                "//conditions:default": [],
            }) + select({
+               # TODO: Remove once https://reviews.llvm.org/D73007 is in the lowest supported Xcode version
+               repository + "//bazel:apple": ["-Wno-range-loop-analysis"],
+               "//conditions:default": [],
+           }) + select({
                repository + "//bazel:no_debug_info": ["-g0"],
                "//conditions:default": [],
            }) + select({
@@ -91,9 +96,6 @@ def envoy_copts(repository, test = False):
                repository + "//bazel:linux_x86_64": ["-DTCMALLOC"],
                repository + "//bazel:linux_aarch64": ["-DTCMALLOC"],
                "//conditions:default": ["-DGPERFTOOLS_TCMALLOC"],
-           }) + select({
-               repository + "//bazel:disable_signal_trace": [],
-               "//conditions:default": ["-DENVOY_HANDLE_SIGNALS"],
            }) + select({
                repository + "//bazel:disable_object_dump_on_signal_trace": [],
                "//conditions:default": ["-DENVOY_OBJECT_TRACE_ON_DUMP"],
@@ -113,10 +115,18 @@ def envoy_copts(repository, test = False):
                # APPLE_USE_RFC_3542 is needed to support IPV6_PKTINFO in MAC OS.
                repository + "//bazel:apple": ["-D__APPLE_USE_RFC_3542"],
                "//conditions:default": [],
+           }) + select({
+               repository + "//bazel:uhv_enabled": ["-DENVOY_ENABLE_UHV"],
+               "//conditions:default": [],
            }) + envoy_select_hot_restart(["-DENVOY_HOT_RESTART"], repository) + \
-           envoy_select_enable_http3(["-DENVOY_ENABLE_QUIC"], repository) + \
+           envoy_select_disable_exceptions(["-fno-unwind-tables", "-fno-exceptions"], repository) + \
+           envoy_select_admin_html(["-DENVOY_ADMIN_HTML"], repository) + \
+           envoy_select_static_extension_registration(["-DENVOY_STATIC_EXTENSION_REGISTRATION"], repository) + \
+           envoy_select_disable_logging(["-DENVOY_DISABLE_LOGGING"], repository) + \
            _envoy_select_perf_annotation(["-DENVOY_PERF_ANNOTATION"]) + \
+           _envoy_select_perfetto(["-DENVOY_PERFETTO"]) + \
            envoy_select_google_grpc(["-DENVOY_GOOGLE_GRPC"], repository) + \
+           envoy_select_signal_trace(["-DENVOY_HANDLE_SIGNALS"], repository) + \
            _envoy_select_path_normalization_by_default(["-DENVOY_NORMALIZE_PATH_BY_DEFAULT"], repository)
 
 # References to Envoy external dependencies should be wrapped with this function.
@@ -143,6 +153,13 @@ def envoy_stdlib_deps():
         "@envoy//bazel:msan_build": ["@envoy//bazel:dynamic_stdlib"],
         "@envoy//bazel:tsan_build": ["@envoy//bazel:dynamic_stdlib"],
         "//conditions:default": ["@envoy//bazel:static_stdlib"],
+    })
+
+def envoy_dbg_linkopts():
+    return select({
+        # TODO: Remove once we have https://github.com/bazelbuild/bazel/pull/15635
+        "@envoy//bazel:apple_non_opt": ["-Wl,-no_deduplicate"],
+        "//conditions:default": [],
     })
 
 # Dependencies on tcmalloc_and_profiler should be wrapped with this function.
@@ -174,3 +191,29 @@ def _envoy_select_perf_annotation(xs):
         "@envoy//bazel:enable_perf_annotation": xs,
         "//conditions:default": [],
     })
+
+def _envoy_select_perfetto(xs):
+    return select({
+        "@envoy//bazel:enable_perf_tracing": xs,
+        "//conditions:default": [],
+    })
+
+def envoy_exported_symbols_input():
+    return ["@envoy//bazel:exported_symbols.txt"]
+
+# Default symbols to be exported.
+# TODO(wbpcode): make this work correctly for apple/darwin.
+def _envoy_default_exported_symbols():
+    return select({
+        "@envoy//bazel:linux": [
+            "-Wl,--dynamic-list=$(location @envoy//bazel:exported_symbols.txt)",
+        ],
+        "//conditions:default": [],
+    })
+
+# Select the given values if exporting is enabled in the current build.
+def envoy_select_exported_symbols(xs):
+    return select({
+        "@envoy//bazel:enable_exported_symbols": xs,
+        "//conditions:default": [],
+    }) + _envoy_default_exported_symbols()

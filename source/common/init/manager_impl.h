@@ -4,8 +4,8 @@
 
 #include "envoy/init/manager.h"
 
-#include "common/common/logger.h"
-#include "common/init/watcher_impl.h"
+#include "source/common/common/logger.h"
+#include "source/common/init/watcher_impl.h"
 
 #include "absl/container/flat_hash_map.h"
 
@@ -49,10 +49,10 @@ private:
   const std::string name_;
 
   // Current state.
-  State state_;
+  State state_{State::Uninitialized};
 
   // Current number of registered targets that have not yet initialized.
-  uint32_t count_;
+  uint32_t count_{0};
 
   // Handle to the watcher passed in `initialize`, to be called when initialization completes.
   WatcherHandlePtr watcher_handle_;

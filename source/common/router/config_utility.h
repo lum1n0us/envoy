@@ -9,12 +9,12 @@
 #include "envoy/http/codes.h"
 #include "envoy/upstream/resource_manager.h"
 
-#include "common/common/empty_string.h"
-#include "common/common/matchers.h"
-#include "common/common/utility.h"
-#include "common/http/headers.h"
-#include "common/http/utility.h"
-#include "common/protobuf/utility.h"
+#include "source/common/common/empty_string.h"
+#include "source/common/common/matchers.h"
+#include "source/common/common/utility.h"
+#include "source/common/http/headers.h"
+#include "source/common/http/utility.h"
+#include "source/common/protobuf/utility.h"
 
 #include "absl/types/optional.h"
 
@@ -39,11 +39,12 @@ public:
      * @param request_query_params supplies the parsed query parameters from a request.
      * @return bool true if a match for this QueryParameterMatcher exists in request_query_params.
      */
-    bool matches(const Http::Utility::QueryParams& request_query_params) const;
+    bool matches(const Http::Utility::QueryParamsMulti& request_query_params) const;
 
   private:
     const std::string name_;
-    const absl::optional<Matchers::StringMatcherImpl> matcher_;
+    const absl::optional<Matchers::StringMatcherImpl<envoy::type::matcher::v3::StringMatcher>>
+        matcher_;
   };
 
   using QueryParameterMatcherPtr = std::unique_ptr<const QueryParameterMatcher>;
@@ -61,7 +62,7 @@ public:
    * @return bool true if all the query params (and values) in the config_params are found in the
    *         query_params
    */
-  static bool matchQueryParams(const Http::Utility::QueryParams& query_params,
+  static bool matchQueryParams(const Http::Utility::QueryParamsMulti& query_params,
                                const std::vector<QueryParameterMatcherPtr>& config_query_params);
 
   /**

@@ -1,10 +1,10 @@
-#include "extensions/filters/http/csrf/config.h"
+#include "source/extensions/filters/http/csrf/config.h"
 
 #include "envoy/extensions/filters/http/csrf/v3/csrf.pb.h"
 #include "envoy/extensions/filters/http/csrf/v3/csrf.pb.validate.h"
 #include "envoy/registry/registry.h"
 
-#include "extensions/filters/http/csrf/csrf_filter.h"
+#include "source/extensions/filters/http/csrf/csrf_filter.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -31,8 +31,8 @@ CsrfFilterFactory::createRouteSpecificFilterConfigTyped(
 /**
  * Static registration for the CSRF filter. @see RegisterFactory.
  */
-REGISTER_FACTORY(CsrfFilterFactory,
-                 Server::Configuration::NamedHttpFilterConfigFactory){"envoy.csrf"};
+LEGACY_REGISTER_FACTORY(CsrfFilterFactory, Server::Configuration::NamedHttpFilterConfigFactory,
+                        "envoy.csrf");
 
 } // namespace Csrf
 } // namespace HttpFilters

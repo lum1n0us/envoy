@@ -8,13 +8,13 @@
 #include "envoy/singleton/instance.h"
 #include "envoy/thread_local/thread_local.h"
 
-#include "common/common/thread.h"
-#include "common/common/utility.h"
-#include "common/config/utility.h"
-#include "common/init/manager_impl.h"
-#include "common/init/target_impl.h"
-#include "common/init/watcher_impl.h"
-#include "common/protobuf/protobuf.h"
+#include "source/common/common/thread.h"
+#include "source/common/common/utility.h"
+#include "source/common/config/utility.h"
+#include "source/common/init/manager_impl.h"
+#include "source/common/init/target_impl.h"
+#include "source/common/init/watcher_impl.h"
+#include "source/common/protobuf/protobuf.h"
 
 namespace Envoy {
 namespace Config {
@@ -172,9 +172,10 @@ public:
    * Must be called by derived classes when the onConfigUpdate() callback associated with the
    * underlying subscription is issued.
    */
-  void onConfigUpdate() {
+  absl::Status onConfigUpdate() {
     setLastUpdated();
     local_init_target_.ready();
+    return absl::OkStatus();
   }
 
   /**
@@ -383,7 +384,8 @@ public:
    * @return ProtobufTypes::MessagePtr the config dump proto corresponding to the associated
    *                                   config providers.
    */
-  virtual ProtobufTypes::MessagePtr dumpConfigs() const PURE;
+  virtual ProtobufTypes::MessagePtr
+  dumpConfigs(const Matchers::StringMatcher& name_matcher) const PURE;
 
 protected:
   // Ordered set for deterministic config dump output.
@@ -393,7 +395,7 @@ protected:
   using ConfigSubscriptionMap =
       absl::node_hash_map<uint64_t, std::weak_ptr<ConfigSubscriptionCommonBase>>;
 
-  ConfigProviderManagerImplBase(Server::Admin& admin, const std::string& config_name);
+  ConfigProviderManagerImplBase(OptRef<Server::Admin> admin, const std::string& config_name);
 
   const ConfigSubscriptionMap& configSubscriptions() const { return config_subscriptions_; }
 

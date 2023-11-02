@@ -1,4 +1,8 @@
 load(
+    "@envoy_build_config//:extensions_build_config.bzl",
+    "LEGACY_ALWAYSLINK",
+)
+load(
     "//bazel:envoy_build_system.bzl",
     "envoy_cc_library",
     "envoy_google_grpc_external_deps",
@@ -17,7 +21,8 @@ envoy_cc_library(
     deps = [
         ":codec_lib",
         ":context_lib",
-        "//include/envoy/grpc:async_client_interface",
+        "//envoy/grpc:async_client_interface",
+        "//envoy/stream_info:stream_info_interface",
         "//source/common/buffer:zero_copy_input_stream_lib",
         "//source/common/http:async_client_lib",
     ],
@@ -31,9 +36,9 @@ envoy_cc_library(
         ":codec_lib",
         ":context_lib",
         ":typed_async_client_lib",
-        "//include/envoy/grpc:async_client_interface",
+        "//envoy/grpc:async_client_interface",
+        "//envoy/stream_info:stream_info_interface",
         "//source/common/buffer:zero_copy_input_stream_lib",
-        "//source/common/config:version_converter_lib",
         "//source/common/http:async_client_lib",
         "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
     ],
@@ -46,10 +51,10 @@ envoy_cc_library(
     deps = [
         ":async_client_lib",
         ":context_lib",
-        "//include/envoy/grpc:async_client_manager_interface",
-        "//include/envoy/singleton:manager_interface",
-        "//include/envoy/thread_local:thread_local_interface",
-        "//include/envoy/upstream:cluster_manager_interface",
+        "//envoy/grpc:async_client_manager_interface",
+        "//envoy/singleton:manager_interface",
+        "//envoy/thread_local:thread_local_interface",
+        "//envoy/upstream:cluster_manager_interface",
     ] + envoy_select_google_grpc([":google_async_client_lib"]),
 )
 
@@ -58,7 +63,7 @@ envoy_cc_library(
     srcs = ["codec.cc"],
     hdrs = ["codec.h"],
     deps = [
-        "//include/envoy/buffer:buffer_interface",
+        "//envoy/buffer:buffer_interface",
         "//source/common/buffer:buffer_lib",
         "//source/common/common:minimal_logger_lib",
     ],
@@ -70,7 +75,7 @@ envoy_cc_library(
     hdrs = ["status.h"],
     external_deps = ["abseil_optional"],
     deps = [
-        "//include/envoy/grpc:status",
+        "//envoy/grpc:status",
     ],
 )
 
@@ -80,11 +85,11 @@ envoy_cc_library(
     hdrs = ["common.h"],
     external_deps = ["abseil_optional"],
     deps = [
-        "//include/envoy/http:header_map_interface",
-        "//include/envoy/http:message_interface",
-        "//include/envoy/stats:stats_interface",
-        "//include/envoy/upstream:cluster_manager_interface",
-        "//include/envoy/upstream:upstream_interface",
+        "//envoy/http:header_map_interface",
+        "//envoy/http:message_interface",
+        "//envoy/stats:stats_interface",
+        "//envoy/upstream:cluster_manager_interface",
+        "//envoy/upstream:upstream_interface",
         "//source/common/buffer:buffer_lib",
         "//source/common/buffer:zero_copy_input_stream_lib",
         "//source/common/common:assert_lib",
@@ -112,9 +117,9 @@ envoy_cc_library(
     deps = [
         ":common_lib",
         ":stat_names_lib",
-        "//include/envoy/grpc:context_interface",
-        "//include/envoy/http:header_map_interface",
-        "//include/envoy/stats:stats_interface",
+        "//envoy/grpc:context_interface",
+        "//envoy/http:header_map_interface",
+        "//envoy/stats:stats_interface",
         "//source/common/common:hash_lib",
         "//source/common/stats:symbol_table_lib",
         "//source/common/stats:utility_lib",
@@ -131,8 +136,8 @@ envoy_cc_library(
     ],
     deps = [
         ":google_grpc_creds_lib",
-        "//include/envoy/api:api_interface",
-        "//include/envoy/registry",
+        "//envoy/api:api_interface",
+        "//envoy/registry",
         "//source/common/buffer:buffer_lib",
         "//source/common/common:assert_lib",
         "//source/common/common:empty_string",
@@ -149,7 +154,7 @@ envoy_cc_library(
     srcs = ["stat_names.cc"],
     hdrs = ["stat_names.h"],
     deps = [
-        "//include/envoy/grpc:status",
+        "//envoy/grpc:status",
         "//source/common/stats:symbol_table_lib",
     ],
 )
@@ -169,10 +174,11 @@ envoy_cc_library(
         ":google_grpc_utils_lib",
         ":stat_names_lib",
         ":typed_async_client_lib",
-        "//include/envoy/api:api_interface",
-        "//include/envoy/grpc:google_grpc_creds_interface",
-        "//include/envoy/thread:thread_interface",
-        "//include/envoy/thread_local:thread_local_object",
+        "//envoy/api:api_interface",
+        "//envoy/grpc:google_grpc_creds_interface",
+        "//envoy/stream_info:stream_info_interface",
+        "//envoy/thread:thread_interface",
+        "//envoy/thread_local:thread_local_object",
         "//source/common/common:base64_lib",
         "//source/common/common:empty_string",
         "//source/common/common:linked_object",
@@ -200,25 +206,30 @@ envoy_cc_library(
     hdrs = ["google_grpc_creds_impl.h"],
     external_deps = ["grpc"],
     deps = [
-        "//include/envoy/api:api_interface",
-        "//include/envoy/grpc:google_grpc_creds_interface",
-        "//include/envoy/registry",
+        "//envoy/api:api_interface",
+        "//envoy/grpc:google_grpc_creds_interface",
+        "//envoy/registry",
         "//source/common/config:datasource_lib",
         "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
+    ],
+    alwayslink = LEGACY_ALWAYSLINK,
+)
+
+envoy_cc_library(
+    name = "buffered_async_client_lib",
+    hdrs = ["buffered_async_client.h"],
+    deps = [
+        ":buffered_message_ttl_manager_lib",
+        ":typed_async_client_lib",
+        "//source/common/protobuf:utility_lib",
+        "@com_google_absl//absl/container:btree",
     ],
 )
 
 envoy_cc_library(
-    name = "google_async_client_cache",
-    srcs = ["google_async_client_cache.cc"],
-    hdrs = ["google_async_client_cache.h"],
-    external_deps = [
-        "grpc",
-    ],
+    name = "buffered_message_ttl_manager_lib",
+    hdrs = ["buffered_message_ttl_manager.h"],
     deps = [
-        "//include/envoy/grpc:async_client_manager_interface",
-        "//include/envoy/server:factory_context_interface",
-        "//include/envoy/singleton:instance_interface",
-        "//include/envoy/thread_local:thread_local_interface",
+        "//envoy/event:dispatcher_interface",
     ],
 )

@@ -1,9 +1,9 @@
-#include "common/event/file_event_impl.h"
+#include "source/common/event/file_event_impl.h"
 
 #include <cstdint>
 
-#include "common/common/assert.h"
-#include "common/event/dispatcher_impl.h"
+#include "source/common/common/assert.h"
+#include "source/common/event/dispatcher_impl.h"
 
 #include "event2/event.h"
 
@@ -55,6 +55,7 @@ void FileEventImpl::activate(uint32_t events) {
 void FileEventImpl::assignEvents(uint32_t events, event_base* base) {
   ASSERT(dispatcher_.isThreadSafe());
   ASSERT(base != nullptr);
+
   enabled_events_ = events;
   event_assign(
       &raw_event_, base, fd_,
@@ -85,7 +86,16 @@ void FileEventImpl::assignEvents(uint32_t events, event_base* base) {
 
 void FileEventImpl::updateEvents(uint32_t events) {
   ASSERT(dispatcher_.isThreadSafe());
-  if (events == enabled_events_) {
+  // The update can be skipped in cases where the old and new event mask are the same if the fd is
+  // using Level or EmulatedEdge trigger modes, but not Edge trigger mode. When the fd is registered
+  // in edge trigger mode, re-registering the fd will force re-computation of the readable/writable
+  // state even in cases where the event mask is not changing. See
+  // https://github.com/envoyproxy/envoy/pull/16389 for more details.
+  // TODO(antoniovicente) Consider ways to optimize away event registration updates in edge trigger
+  // mode once setEnabled stops clearing injected_activation_events_ before calling updateEvents
+  // and/or implement optimizations at the Network::ConnectionImpl level to reduce the number of
+  // calls to setEnabled.
+  if (events == enabled_events_ && trigger_ != FileTriggerType::Edge) {
     return;
   }
   auto* base = event_get_base(&raw_event_);
@@ -111,7 +121,6 @@ void FileEventImpl::unregisterEventIfEmulatedEdge(uint32_t event) {
   ASSERT(dispatcher_.isThreadSafe());
   // This constexpr if allows the compiler to optimize away the function on POSIX
   if constexpr (PlatformDefaultTriggerType == FileTriggerType::EmulatedEdge) {
-    ASSERT((event & (FileReadyType::Read | FileReadyType::Write)) == event);
     if (trigger_ == FileTriggerType::EmulatedEdge) {
       auto new_event_mask = enabled_events_ & ~event;
       updateEvents(new_event_mask);
@@ -126,10 +135,6 @@ void FileEventImpl::registerEventIfEmulatedEdge(uint32_t event) {
     ASSERT((event & (FileReadyType::Read | FileReadyType::Write)) == event);
     if (trigger_ == FileTriggerType::EmulatedEdge) {
       auto new_event_mask = enabled_events_ | event;
-      if (event & FileReadyType::Read && (enabled_events_ & FileReadyType::Closed)) {
-        // We never ask for both early close and read at the same time.
-        new_event_mask = new_event_mask & ~FileReadyType::Read;
-      }
       updateEvents(new_event_mask);
     }
   }
@@ -138,16 +143,6 @@ void FileEventImpl::registerEventIfEmulatedEdge(uint32_t event) {
 void FileEventImpl::mergeInjectedEventsAndRunCb(uint32_t events) {
   ASSERT(dispatcher_.isThreadSafe());
   if (injected_activation_events_ != 0) {
-    // TODO(antoniovicente) remove this adjustment to activation events once ConnectionImpl can
-    // handle Read and Close events delivered together.
-    if constexpr (PlatformDefaultTriggerType == FileTriggerType::EmulatedEdge) {
-      if (events & FileReadyType::Closed && injected_activation_events_ & FileReadyType::Read) {
-        // We never ask for both early close and read at the same time. If close is requested
-        // keep that instead.
-        injected_activation_events_ = injected_activation_events_ & ~FileReadyType::Read;
-      }
-    }
-
     events |= injected_activation_events_;
     injected_activation_events_ = 0;
     activation_cb_->cancel();

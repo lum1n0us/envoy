@@ -38,14 +38,16 @@ same or different weights.
   approach is nearly as good as an O(N) full scan). This is also known as P2C (power of two
   choices). The P2C load balancer has the property that a host with the highest number of active
   requests in the cluster will never receive new requests. It will be allowed to drain until it is
-  less than or equal to all of the other hosts.
+  less than or equal to all of the other hosts. The number of hosts chosen can be changed by setting
+  ``choice_count``.
+
 * *all weights not equal*:  If two or more hosts in the cluster have different load balancing
   weights, the load balancer shifts into a mode where it uses a weighted round robin schedule in
   which weights are dynamically adjusted based on the host's request load at the time of selection.
 
   In this case the weights are calculated at the time a host is picked using the following formula:
 
-  `weight = load_balancing_weight / (active_requests + 1)^active_request_bias`.
+  ``weight = load_balancing_weight / (active_requests + 1)^active_request_bias``.
 
   :ref:`active_request_bias<envoy_v3_api_field_config.cluster.v3.Cluster.LeastRequestLbConfig.active_request_bias>`
   can be configured via runtime and defaults to 1.0. It must be greater than or equal to 0.0.
@@ -53,7 +55,7 @@ same or different weights.
   The larger the active request bias is, the more aggressively active requests will lower the
   effective weight.
 
-  If `active_request_bias` is set to 0.0, the least request load balancer behaves like the round
+  If ``active_request_bias`` is set to 0.0, the least request load balancer behaves like the round
   robin load balancer and ignores the active request count at the time of picking.
 
   For example, if active_request_bias is 1.0, a host with weight 2 and an active request count of 4
@@ -73,7 +75,7 @@ the ring. This technique is also commonly known as `"Ketama" <https://github.com
 hashing, and like all hash-based load balancers, it is only effective when protocol routing is used
 that specifies a value to hash on. If you want something other than the host's address to be used
 as the hash key (e.g. the semantic name of your host in a Kubernetes StatefulSet), then you can specify it
-in the ``"envoy.lb"`` :ref:`LbEndpoint.Metadata <envoy_api_field_endpoint.LbEndpoint.metadata>` e.g.:
+in the ``"envoy.lb"`` :ref:`LbEndpoint.Metadata <envoy_v3_api_field_config.endpoint.v3.lbendpoint.metadata>` e.g.:
 
 .. validated-code-block:: yaml
   :type-name: envoy.config.core.v3.Metadata
@@ -82,7 +84,7 @@ in the ``"envoy.lb"`` :ref:`LbEndpoint.Metadata <envoy_api_field_endpoint.LbEndp
       envoy.lb:
         hash_key: "YOUR HASH KEY"
 
-This will override :ref:`use_hostname_for_hashing<envoy_api_field_Cluster.CommonLbConfig.consistent_hashing_lb_config>`.
+This will override :ref:`use_hostname_for_hashing <envoy_v3_api_field_config.cluster.v3.cluster.commonlbconfig.consistent_hashing_lb_config>`.
 
 Each host is hashed and placed on the ring some number of times proportional to its weight. For
 example, if host A has a weight of 1 and host B has a weight of 2, then there might be three entries
@@ -114,7 +116,7 @@ any place in which consistent hashing is desired. Like the ring hash load balanc
 hashing load balancer is only effective when protocol routing is used that specifies a value to
 hash on. If you want something other than the host's address to be used as the hash key (e.g. the
 semantic name of your host in a Kubernetes StatefulSet), then you can specify it in the ``"envoy.lb"``
-:ref:`LbEndpoint.Metadata <envoy_api_field_endpoint.LbEndpoint.metadata>` e.g.:
+:ref:`LbEndpoint.Metadata <envoy_v3_api_field_config.endpoint.v3.lbendpoint.metadata>` e.g.:
 
 .. validated-code-block:: yaml
   :type-name: envoy.config.core.v3.Metadata
@@ -123,7 +125,7 @@ semantic name of your host in a Kubernetes StatefulSet), then you can specify it
       envoy.lb:
         hash_key: "YOUR HASH KEY"
 
-This will override :ref:`use_hostname_for_hashing<envoy_api_field_Cluster.CommonLbConfig.consistent_hashing_lb_config>`.
+This will override :ref:`use_hostname_for_hashing <envoy_v3_api_field_config.cluster.v3.cluster.commonlbconfig.consistent_hashing_lb_config>`.
 
 The table construction algorithm places each host in the table some number of times proportional
 to its weight, until the table is completely filled. For example, if host A has a weight of 1 and
@@ -138,10 +140,12 @@ are underrepresented or missing.
 
 In general, when compared to the ring hash ("ketama") algorithm, Maglev has substantially faster
 table lookup build times as well as host selection times (approximately 10x and 5x respectively
-when using a large ring size of 256K entries). The downside of Maglev is that it is not as stable
-as ring hash. More keys will move position when hosts are removed (simulations show approximately
-double the keys will move). With that said, for many applications including Redis, Maglev is very
-likely a superior drop in replacement for ring hash. The advanced reader can use
+when using a large ring size of 256K entries). While Maglev aims for minimal disruption, it is not
+as stable as ring hash when upstream hosts change. More keys will move position when hosts are removed
+(simulations show approximately double the keys will move). The amount of disruption can be minimized
+by increasing the :ref:`table_size<envoy_v3_api_field_config.cluster.v3.Cluster.MaglevLbConfig.table_size>`.
+With that said, for many applications
+including Redis, Maglev is very likely a superior drop in replacement for ring hash. The advanced reader can use
 :repo:`this benchmark </test/common/upstream/load_balancer_benchmark.cc>` to compare ring hash
 versus Maglev with different parameters.
 

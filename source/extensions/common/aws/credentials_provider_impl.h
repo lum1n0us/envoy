@@ -4,11 +4,11 @@
 
 #include "envoy/api/api.h"
 #include "envoy/event/timer.h"
+#include "envoy/http/message.h"
 
-#include "common/common/logger.h"
-#include "common/common/thread.h"
-
-#include "extensions/common/aws/credentials_provider.h"
+#include "source/common/common/logger.h"
+#include "source/common/common/thread.h"
+#include "source/extensions/common/aws/credentials_provider.h"
 
 #include "absl/strings/string_view.h"
 
@@ -29,23 +29,15 @@ public:
   Credentials getCredentials() override;
 };
 
-class MetadataCredentialsProviderBase : public CredentialsProvider,
-                                        public Logger::Loggable<Logger::Id::aws> {
+class CachedCredentialsProviderBase : public CredentialsProvider,
+                                      public Logger::Loggable<Logger::Id::aws> {
 public:
-  using MetadataFetcher = std::function<absl::optional<std::string>(
-      const std::string& host, const std::string& path, const std::string& auth_token)>;
-
-  MetadataCredentialsProviderBase(Api::Api& api, const MetadataFetcher& metadata_fetcher)
-      : api_(api), metadata_fetcher_(metadata_fetcher) {}
-
   Credentials getCredentials() override {
     refreshIfNeeded();
     return cached_credentials_;
   }
 
 protected:
-  Api::Api& api_;
-  MetadataFetcher metadata_fetcher_;
   SystemTime last_updated_;
   Credentials cached_credentials_;
   Thread::MutexBasicLockable lock_;
@@ -54,6 +46,36 @@ protected:
 
   virtual bool needsRefresh() PURE;
   virtual void refresh() PURE;
+};
+
+/**
+ * Retrieve AWS credentials from the credentials file.
+ *
+ * Adheres to conventions specified in:
+ * https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html
+ */
+class CredentialsFileCredentialsProvider : public CachedCredentialsProviderBase {
+public:
+  CredentialsFileCredentialsProvider(Api::Api& api) : api_(api) {}
+
+private:
+  Api::Api& api_;
+
+  bool needsRefresh() override;
+  void refresh() override;
+  void extractCredentials(const std::string& credentials_file, const std::string& profile);
+};
+
+class MetadataCredentialsProviderBase : public CachedCredentialsProviderBase {
+public:
+  using MetadataFetcher = std::function<absl::optional<std::string>(Http::RequestMessage&)>;
+
+  MetadataCredentialsProviderBase(Api::Api& api, const MetadataFetcher& metadata_fetcher)
+      : api_(api), metadata_fetcher_(metadata_fetcher) {}
+
+protected:
+  Api::Api& api_;
+  MetadataFetcher metadata_fetcher_;
 };
 
 /**
@@ -69,6 +91,9 @@ public:
 private:
   bool needsRefresh() override;
   void refresh() override;
+  void fetchInstanceRole(const std::string& token);
+  void fetchCredentialFromInstanceRole(const std::string& instance_role, const std::string& token);
+  void extractCredentials(const std::string& credential_document_value);
 };
 
 /**
@@ -91,6 +116,7 @@ private:
 
   bool needsRefresh() override;
   void refresh() override;
+  void extractCredentials(const std::string& credential_document_value);
 };
 
 /**
@@ -116,6 +142,9 @@ public:
   virtual ~CredentialsProviderChainFactories() = default;
 
   virtual CredentialsProviderSharedPtr createEnvironmentCredentialsProvider() const PURE;
+
+  virtual CredentialsProviderSharedPtr
+  createCredentialsFileCredentialsProvider(Api::Api& api) const PURE;
 
   virtual CredentialsProviderSharedPtr createTaskRoleCredentialsProvider(
       Api::Api& api, const MetadataCredentialsProviderBase::MetadataFetcher& metadata_fetcher,
@@ -146,6 +175,11 @@ public:
 private:
   CredentialsProviderSharedPtr createEnvironmentCredentialsProvider() const override {
     return std::make_shared<EnvironmentCredentialsProvider>();
+  }
+
+  CredentialsProviderSharedPtr
+  createCredentialsFileCredentialsProvider(Api::Api& api) const override {
+    return std::make_shared<CredentialsFileCredentialsProvider>(api);
   }
 
   CredentialsProviderSharedPtr createTaskRoleCredentialsProvider(

@@ -4,16 +4,27 @@
 #include "envoy/extensions/compression/brotli/compressor/v3/brotli.pb.h"
 #include "envoy/extensions/compression/brotli/compressor/v3/brotli.pb.validate.h"
 
-#include "common/http/headers.h"
-
-#include "extensions/compression/brotli/compressor/brotli_compressor_impl.h"
-#include "extensions/compression/common/compressor/factory_base.h"
+#include "source/common/http/headers.h"
+#include "source/extensions/compression/brotli/compressor/brotli_compressor_impl.h"
+#include "source/extensions/compression/common/compressor/factory_base.h"
 
 namespace Envoy {
 namespace Extensions {
 namespace Compression {
 namespace Brotli {
 namespace Compressor {
+
+// Default input block size.
+const uint32_t DefaultInputBlockBits = 24;
+
+// Default compression window size.
+const uint32_t DefaultWindowBits = 18;
+
+// Default quality.
+const uint32_t DefaultQuality = 3;
+
+// Default zlib chunk size.
+const uint32_t DefaultChunkSize = 4096;
 
 namespace {
 
@@ -55,7 +66,8 @@ public:
 
 private:
   Envoy::Compression::Compressor::CompressorFactoryPtr createCompressorFactoryFromProtoTyped(
-      const envoy::extensions::compression::brotli::compressor::v3::Brotli& config) override;
+      const envoy::extensions::compression::brotli::compressor::v3::Brotli& config,
+      Server::Configuration::FactoryContext& context) override;
 };
 
 DECLARE_FACTORY(BrotliCompressorLibraryFactory);

@@ -1,18 +1,22 @@
-#include "common/grpc/google_async_client_impl.h"
+#include "source/common/grpc/google_async_client_impl.h"
 
+#include "envoy/common/time.h"
 #include "envoy/config/core/v3/grpc_service.pb.h"
+#include "envoy/http/protocol.h"
 #include "envoy/stats/scope.h"
 
-#include "common/common/base64.h"
-#include "common/common/empty_string.h"
-#include "common/common/lock_guard.h"
-#include "common/config/datasource.h"
-#include "common/grpc/common.h"
-#include "common/grpc/google_grpc_creds_impl.h"
-#include "common/grpc/google_grpc_utils.h"
-#include "common/router/header_parser.h"
-#include "common/tracing/http_tracer_impl.h"
+#include "source/common/common/base64.h"
+#include "source/common/common/empty_string.h"
+#include "source/common/common/lock_guard.h"
+#include "source/common/common/utility.h"
+#include "source/common/config/datasource.h"
+#include "source/common/grpc/common.h"
+#include "source/common/grpc/google_grpc_creds_impl.h"
+#include "source/common/grpc/google_grpc_utils.h"
+#include "source/common/router/header_parser.h"
+#include "source/common/tracing/http_tracer_impl.h"
 
+#include "absl/strings/str_cat.h"
 #include "grpcpp/support/proto_buffer_reader.h"
 
 namespace Envoy {
@@ -80,11 +84,12 @@ GoogleAsyncClientImpl::GoogleAsyncClientImpl(Event::Dispatcher& dispatcher,
                                              const envoy::config::core::v3::GrpcService& config,
                                              Api::Api& api, const StatNames& stat_names)
     : dispatcher_(dispatcher), tls_(tls), stat_prefix_(config.google_grpc().stat_prefix()),
-      scope_(scope),
+      target_uri_(config.google_grpc().target_uri()), scope_(scope),
       per_stream_buffer_limit_bytes_(PROTOBUF_GET_WRAPPED_OR_DEFAULT(
           config.google_grpc(), per_stream_buffer_limit_bytes, DefaultBufferLimitBytes)),
-      metadata_parser_(
-          Router::HeaderParser::configure(config.initial_metadata(), /*append=*/false)) {
+      metadata_parser_(Router::HeaderParser::configure(
+          config.initial_metadata(),
+          envoy::config::core::v3::HeaderValueOption::OVERWRITE_IF_EXISTS_OR_ADD)) {
   // We rebuild the channel each time we construct the channel. It appears that the gRPC library is
   // smart enough to do connection pooling and reuse with identical channel args, so this should
   // have comparable overhead to what we are doing in Grpc::AsyncClientImpl, i.e. no expensive
@@ -108,6 +113,7 @@ GoogleAsyncClientImpl::GoogleAsyncClientImpl(Event::Dispatcher& dispatcher,
 }
 
 GoogleAsyncClientImpl::~GoogleAsyncClientImpl() {
+  ASSERT(isThreadSafe());
   ENVOY_LOG(debug, "Client teardown, resetting streams");
   while (!active_streams_.empty()) {
     active_streams_.front()->resetStream();
@@ -120,6 +126,7 @@ AsyncRequest* GoogleAsyncClientImpl::sendRaw(absl::string_view service_full_name
                                              RawAsyncRequestCallbacks& callbacks,
                                              Tracing::Span& parent_span,
                                              const Http::AsyncClient::RequestOptions& options) {
+  ASSERT(isThreadSafe());
   auto* const async_request = new GoogleAsyncRequestImpl(
       *this, service_full_name, method_name, std::move(request), callbacks, parent_span, options);
   GoogleAsyncStreamImplPtr grpc_stream{async_request};
@@ -137,6 +144,7 @@ RawAsyncStream* GoogleAsyncClientImpl::startRaw(absl::string_view service_full_n
                                                 absl::string_view method_name,
                                                 RawAsyncStreamCallbacks& callbacks,
                                                 const Http::AsyncClient::StreamOptions& options) {
+  ASSERT(isThreadSafe());
   auto grpc_stream = std::make_unique<GoogleAsyncStreamImpl>(*this, service_full_name, method_name,
                                                              callbacks, options);
 
@@ -156,7 +164,8 @@ GoogleAsyncStreamImpl::GoogleAsyncStreamImpl(GoogleAsyncClientImpl& parent,
                                              const Http::AsyncClient::StreamOptions& options)
     : parent_(parent), tls_(parent_.tls_), dispatcher_(parent_.dispatcher_), stub_(parent_.stub_),
       service_full_name_(service_full_name), method_name_(method_name), callbacks_(callbacks),
-      options_(options) {}
+      options_(options), unused_stream_info_(Http::Protocol::Http2, dispatcher_.timeSource(),
+                                             Network::ConnectionInfoProviderSharedPtr{}) {}
 
 GoogleAsyncStreamImpl::~GoogleAsyncStreamImpl() {
   ENVOY_LOG(debug, "GoogleAsyncStreamImpl destruct");
@@ -177,6 +186,9 @@ void GoogleAsyncStreamImpl::initialize(bool /*buffer_body_for_retry*/) {
   ctxt_.set_deadline(abs_deadline);
   // Fill service-wide initial metadata.
   auto initial_metadata = Http::RequestHeaderMapImpl::create();
+  // TODO(cpakulski): Find a better way to access requestHeaders
+  // request headers should not be stored in stream_info.
+  // Maybe put it to parent_context?
   parent_.metadata_parser_->evaluateHeaders(*initial_metadata, options_.parent_context.stream_info);
   callbacks_.onCreateInitialMetadata(*initial_metadata);
   initial_metadata->iterate([this](const Http::HeaderEntry& header) {
@@ -231,6 +243,13 @@ void GoogleAsyncStreamImpl::closeStream() {
 
 void GoogleAsyncStreamImpl::resetStream() {
   ENVOY_LOG(debug, "resetStream");
+  // The gRPC API requires calling Finish() at the end of a stream, even
+  // if the stream is cancelled.
+  if (!finish_pending_) {
+    finish_pending_ = true;
+    rw_->Finish(&status_, &finish_tag_);
+    ++inflight_tags_;
+  }
   cleanup();
 }
 
@@ -365,8 +384,6 @@ void GoogleAsyncStreamImpl::handleOpCompletion(GoogleAsyncTag::Operation op, boo
     cleanup();
     break;
   }
-  default:
-    NOT_REACHED_GCOVR_EXCL_LINE;
   }
 }
 
@@ -422,10 +439,12 @@ GoogleAsyncRequestImpl::GoogleAsyncRequestImpl(
     Tracing::Span& parent_span, const Http::AsyncClient::RequestOptions& options)
     : GoogleAsyncStreamImpl(parent, service_full_name, method_name, *this, options),
       request_(std::move(request)), callbacks_(callbacks) {
-  current_span_ = parent_span.spawnChild(Tracing::EgressConfig::get(),
-                                         "async " + parent.stat_prefix_ + " egress",
-                                         parent.timeSource().systemTime());
+  current_span_ =
+      parent_span.spawnChild(Tracing::EgressConfig::get(),
+                             absl::StrCat("async ", service_full_name, ".", method_name, " egress"),
+                             parent.timeSource().systemTime());
   current_span_->setTag(Tracing::Tags::get().UpstreamCluster, parent.stat_prefix_);
+  current_span_->setTag(Tracing::Tags::get().UpstreamAddress, parent.target_uri_);
   current_span_->setTag(Tracing::Tags::get().Component, Tracing::Tags::get().Proxy);
 }
 
@@ -444,7 +463,7 @@ void GoogleAsyncRequestImpl::cancel() {
 }
 
 void GoogleAsyncRequestImpl::onCreateInitialMetadata(Http::RequestHeaderMap& metadata) {
-  current_span_->injectContext(metadata);
+  current_span_->injectContext(metadata, nullptr);
   callbacks_.onCreateInitialMetadata(metadata);
 }
 

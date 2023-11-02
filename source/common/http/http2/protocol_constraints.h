@@ -6,8 +6,8 @@
 #include "envoy/config/core/v3/protocol.pb.h"
 #include "envoy/network/connection.h"
 
-#include "common/http/http2/codec_stats.h"
-#include "common/http/status.h"
+#include "source/common/http/http2/codec_stats.h"
+#include "source/common/http/status.h"
 
 #include "nghttp2/nghttp2.h"
 
@@ -47,7 +47,7 @@ public:
 
   // Track received frames of various types.
   // Return an error status if inbound frame constraints were violated.
-  Status trackInboundFrames(const nghttp2_frame_hd* hd, uint32_t padding_length);
+  Status trackInboundFrames(size_t length, uint8_t type, uint8_t flags, uint32_t padding_length);
   // Increment the number of DATA frames sent to the peer.
   void incrementOutboundDataFrameCount() { ++outbound_data_frames_; }
   void incrementOpenedStreamCount() { ++opened_streams_; }

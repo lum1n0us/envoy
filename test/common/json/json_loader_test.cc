@@ -1,9 +1,10 @@
 #include <string>
 #include <vector>
 
-#include "common/json/json_loader.h"
-#include "common/stats/isolated_store_impl.h"
+#include "source/common/json/json_loader.h"
+#include "source/common/stats/isolated_store_impl.h"
 
+#include "test/test_common/status_utility.h"
 #include "test/test_common/utility.h"
 
 #include "gtest/gtest.h"
@@ -12,10 +13,51 @@ namespace Envoy {
 namespace Json {
 namespace {
 
+using ::Envoy::StatusHelpers::StatusIs;
+
 class JsonLoaderTest : public testing::Test {
 protected:
   JsonLoaderTest() : api_(Api::createApiForTest()) {}
 
+  ValueType getValidValue(const Json::Object& json, const std::string& key) {
+    return getValid(json.getValue(key));
+  }
+
+  void expectErrorValue(const Json::Object& json, const std::string& key,
+                        absl::StatusCode status_code, const std::string& message) {
+    expectError(json.getValue(key), status_code, message);
+  }
+
+  ObjectSharedPtr getValidObject(const Json::Object& json, const std::string& key) {
+    return getValid(json.getObjectNoThrow(key));
+  }
+
+  void expectErrorObject(const Json::Object& json, const std::string& key,
+                         absl::StatusCode status_code, const std::string& message) {
+    expectError(json.getObjectNoThrow(key), status_code, message);
+  }
+
+  ObjectSharedPtr loadValidJson(const std::string& json) {
+    return getValid(Factory::loadFromStringNoThrow(json));
+  }
+
+  void loadInvalidJson(const std::string& json, absl::StatusCode status_code,
+                       const std::string& message) {
+    expectError(Factory::loadFromStringNoThrow(json), status_code, message);
+  }
+
+  template <typename Type> Type getValid(const absl::StatusOr<Type>& status_or) {
+    EXPECT_TRUE(status_or.ok());
+    return status_or.value();
+  }
+
+  template <typename StatusOrType>
+  void expectError(const StatusOrType& status_or, absl::StatusCode status_code,
+                   const std::string& message) {
+    EXPECT_FALSE(status_or.ok());
+    EXPECT_THAT(status_or, StatusIs(status_code));
+    EXPECT_EQ(status_or.status().message(), message);
+  }
   Api::ApiPtr api_;
 };
 
@@ -28,7 +70,11 @@ TEST_F(JsonLoaderTest, Basic) {
     EXPECT_FALSE(json->hasObject("world"));
     EXPECT_FALSE(json->empty());
     EXPECT_THROW(json->getObject("world"), Exception);
+    expectErrorObject(*json, "world", absl::StatusCode::kNotFound,
+                      "key 'world' missing from lines 1-1");
     EXPECT_THROW(json->getObject("hello"), Exception);
+    expectErrorObject(*json, "hello", absl::StatusCode::kInternal,
+                      "key 'hello' not an object from line 1");
     EXPECT_THROW(json->getBoolean("hello"), Exception);
     EXPECT_THROW(json->getObjectArray("hello"), Exception);
     EXPECT_THROW(json->getString("hello"), Exception);
@@ -48,6 +94,10 @@ TEST_F(JsonLoaderTest, Basic) {
     EXPECT_TRUE(json->getBoolean("hello"));
     EXPECT_TRUE(json->getBoolean("hello", false));
     EXPECT_FALSE(json->getBoolean("world", false));
+
+    EXPECT_TRUE(absl::get<bool>(getValidValue(*json, "hello")));
+    expectErrorValue(*json, "world", absl::StatusCode::kNotFound,
+                     "key 'world' missing from lines 1-1");
   }
 
   {
@@ -60,6 +110,8 @@ TEST_F(JsonLoaderTest, Basic) {
     ObjectSharedPtr json = Factory::loadFromString("{\"hello\":123}");
     EXPECT_EQ(123, json->getInteger("hello", 456));
     EXPECT_EQ(456, json->getInteger("world", 456));
+
+    EXPECT_EQ(123, absl::get<int64_t>(getValidValue(*json, "hello")));
   }
 
   {
@@ -71,16 +123,17 @@ TEST_F(JsonLoaderTest, Basic) {
   }
 
   {
-    if (Runtime::runtimeFeatureEnabled("envoy.reloadable_features.remove_legacy_json")) {
-      EXPECT_THROW_WITH_MESSAGE(Factory::loadFromString("{\"hello\": \n\n\"world\""), Exception,
-                                "JSON supplied is not valid. Error(line 3, column 8, token "
-                                "\"world\"): syntax error while "
-                                "parsing object - unexpected end of input; expected '}'\n");
-    } else {
-      EXPECT_THROW_WITH_MESSAGE(Factory::loadFromString("{\"hello\": \n\n\"world\""), Exception,
-                                "JSON supplied is not valid. Error(offset 19, line 3): Missing a "
-                                "comma or '}' after an object member.\n");
-    }
+    EXPECT_THROW_WITH_MESSAGE(Factory::loadFromString("{\"hello\": \n\n\"world\""), Exception,
+                              "JSON supplied is not valid. Error(line 3, column 8, token "
+                              "\"world\"): syntax error while "
+                              "parsing object - unexpected end of input; expected '}'\n");
+  }
+
+  {
+    loadInvalidJson("{\"hello\": \n\n\"world\"", absl::StatusCode::kInternal,
+                    "JSON supplied is not valid. Error(line 3, column 8, token "
+                    "\"world\"): syntax error while "
+                    "parsing object - unexpected end of input; expected '}'\n");
   }
 
   {
@@ -97,13 +150,15 @@ TEST_F(JsonLoaderTest, Basic) {
     ObjectSharedPtr json =
         Factory::loadFromString("{\"1\":{\"11\":\"111\"},\"2\":{\"22\":\"222\"}}");
     int pos = 0;
-    json->iterate([&pos](const std::string& key, const Json::Object& value) {
+    json->iterate([this, &pos](const std::string& key, const Json::Object& value) {
       EXPECT_TRUE(key == "1" || key == "2");
 
       if (key == "1") {
         EXPECT_EQ("111", value.getString("11"));
+        EXPECT_EQ("111", absl::get<std::string>(getValidValue(value, "11")));
       } else {
         EXPECT_EQ("222", value.getString("22"));
+        EXPECT_EQ("222", absl::get<std::string>(getValidValue(value, "22")));
       }
 
       pos++;
@@ -158,6 +213,10 @@ TEST_F(JsonLoaderTest, Basic) {
     ObjectSharedPtr config = Factory::loadFromString(json);
     std::vector<ObjectSharedPtr> array = config->getObjectArray("descriptors");
     EXPECT_THROW(array[0]->asObjectArray(), Exception);
+
+    // Object Array is not supported as an value.
+    expectErrorValue(*config, "descriptors", absl::StatusCode::kInternal,
+                     "key 'descriptors' not a value type from lines 2-4");
   }
 
   {
@@ -211,6 +270,41 @@ TEST_F(JsonLoaderTest, Basic) {
     ObjectSharedPtr json = Factory::loadFromString("{}");
     EXPECT_TRUE(json->getObjectArray("hello", true).empty());
   }
+
+  {
+    ObjectSharedPtr json = Factory::loadFromString("[ null ]");
+    EXPECT_EQ(json->asJsonString(), "[null]");
+  }
+
+  {
+    ObjectSharedPtr json1 = Factory::loadFromString("[ [ ] , { } ]");
+    EXPECT_EQ(json1->asJsonString(), "[null,null]");
+  }
+
+  {
+    ObjectSharedPtr json1 = Factory::loadFromString("[ true ]");
+    EXPECT_EQ(json1->asJsonString(), "[true]");
+  }
+
+  {
+    ObjectSharedPtr json1 = Factory::loadFromString("{\"foo\": 123, \"bar\": \"cat\"}");
+    EXPECT_EQ(json1->asJsonString(), "{\"bar\":\"cat\",\"foo\":123}");
+  }
+
+  {
+    ObjectSharedPtr json = Factory::loadFromString("{\"hello\": {}}");
+    EXPECT_EQ(json->getObject("hello")->asJsonString(), "null");
+  }
+
+  {
+    ObjectSharedPtr json = loadValidJson("{\"hello\": {}}");
+    EXPECT_EQ(getValidObject(*json, "hello")->asJsonString(), "null");
+  }
+
+  {
+    ObjectSharedPtr json = Factory::loadFromString("{\"hello\": [] }");
+    EXPECT_EQ(json->asJsonString(), "{\"hello\":null}");
+  }
 }
 
 TEST_F(JsonLoaderTest, Integer) {
@@ -222,12 +316,20 @@ TEST_F(JsonLoaderTest, Integer) {
   }
   {
     EXPECT_THROW(Factory::loadFromString("{\"val\":9223372036854775808}"), EnvoyException);
-
-    // I believe this is a bug with rapidjson.
-    // It silently eats numbers below min int64_t with no exception.
-    // Fail when reading key instead of on parse.
     ObjectSharedPtr json = Factory::loadFromString("{\"val\":-9223372036854775809}");
     EXPECT_THROW(json->getInteger("val"), EnvoyException);
+  }
+  // Number overflow exception.
+  {
+    EXPECT_THROW(Factory::loadFromString("-"
+                                         "521111111111111111111111111111111111111111111111111111111"
+                                         "111111111111111111111111111111111111111111111111111111111"
+                                         "111111111111111111111111111111111111111111111111111111111"
+                                         "111111111111111111111111111111111111111111111111111111111"
+                                         "111111111111111111111111111111111111111111111111111111111"
+                                         "111111111111111111111111111111111111111111111111111111111"
+                                         "1111111111111111111111111111111111111111111111111"),
+                 EnvoyException);
   }
 }
 
@@ -236,11 +338,16 @@ TEST_F(JsonLoaderTest, Double) {
     ObjectSharedPtr json = Factory::loadFromString("{\"value1\": 10.5, \"value2\": -12.3}");
     EXPECT_EQ(10.5, json->getDouble("value1"));
     EXPECT_EQ(-12.3, json->getDouble("value2"));
+
+    EXPECT_EQ(10.5, absl::get<double>(getValidValue(*json, "value1")));
+    EXPECT_EQ(-12.3, absl::get<double>(getValidValue(*json, "value2")));
   }
   {
     ObjectSharedPtr json = Factory::loadFromString("{\"foo\": 13.22}");
     EXPECT_EQ(13.22, json->getDouble("foo", 0));
     EXPECT_EQ(0, json->getDouble("bar", 0));
+
+    EXPECT_EQ(13.22, absl::get<double>(getValidValue(*json, "foo")));
   }
   {
     ObjectSharedPtr json = Factory::loadFromString("{\"foo\": \"bar\"}");
@@ -293,14 +400,7 @@ TEST_F(JsonLoaderTest, Schema) {
     )EOF";
 
   ObjectSharedPtr json = Factory::loadFromString(json_string);
-  if (Runtime::runtimeFeatureEnabled("envoy.reloadable_features.remove_legacy_json")) {
-    EXPECT_THROW_WITH_MESSAGE(json->validateSchema(invalid_schema), Exception, "not implemented");
-  } else {
-    EXPECT_THROW_WITH_MESSAGE(
-        json->validateSchema(invalid_schema), Exception,
-        "JSON at lines 2-5 does not conform to schema.\n Invalid schema: #/properties/value1\n "
-        "Schema violation: type\n Offending document key: #/value1");
-  }
+  EXPECT_THROW_WITH_MESSAGE(json->validateSchema(invalid_schema), Exception, "not implemented");
 }
 
 TEST_F(JsonLoaderTest, MissingEnclosingDocument) {
@@ -313,16 +413,10 @@ TEST_F(JsonLoaderTest, MissingEnclosingDocument) {
     }
   ]
   )EOF";
-  if (Runtime::runtimeFeatureEnabled("envoy.reloadable_features.remove_legacy_json")) {
-    EXPECT_THROW_WITH_MESSAGE(
-        Factory::loadFromString(json_string), Exception,
-        "JSON supplied is not valid. Error(line 2, column 15, token \"listeners\" :): syntax error "
-        "while parsing value - unexpected ':'; expected end of input\n");
-  } else {
-    EXPECT_THROW_WITH_MESSAGE(Factory::loadFromString(json_string), Exception,
-                              "JSON supplied is not valid. Error(offset 14, line 2): Terminate "
-                              "parsing due to Handler error.\n");
-  }
+  EXPECT_THROW_WITH_MESSAGE(
+      Factory::loadFromString(json_string), Exception,
+      "JSON supplied is not valid. Error(line 2, column 15, token \"listeners\" :): syntax error "
+      "while parsing value - unexpected ':'; expected end of input\n");
 }
 
 TEST_F(JsonLoaderTest, AsString) {
@@ -337,6 +431,83 @@ TEST_F(JsonLoaderTest, AsString) {
     }
     return true;
   });
+}
+
+TEST_F(JsonLoaderTest, LoadFromStruct) {
+  const std::string json_string = R"EOF({
+    "struct": {
+      "struct_string": "plain_string_value",
+      "struct_protocol": "HTTP/1.1",
+      "struct_struct": {
+        "struct_struct_string": "plain_string_value",
+        "struct_struct_protocol": "HTTP/1.1",
+        "struct_struct_struct": {
+          "struct_struct_struct_string": "plain_string_value",
+          "struct_struct_struct_protocol": "HTTP/1.1",
+          "struct_struct_number": 53,
+          "struct_struct_null": null,
+          "struct_struct_bool": true,
+        },
+        "struct_struct_list": [
+          "struct_struct_list_string",
+          "HTTP/1.1",
+        ],
+      },
+      "struct_list": [
+        "struct_list_string",
+        "HTTP/1.1",
+        {
+          "struct_list_struct_string": "plain_string_value",
+          "struct_list_struct_protocol": "HTTP/1.1",
+        },
+        [
+          "struct_list_list_string",
+          "HTTP/1.1",
+        ],
+      ],
+    },
+    "list": [
+      "list_string",
+      "HTTP/1.1",
+      {
+        "list_struct_string": "plain_string_value",
+        "list_struct_protocol": "HTTP/1.1",
+        "list_struct_struct": {
+          "list_struct_struct_string": "plain_string_value",
+          "list_struct_struct_protocol": "HTTP/1.1",
+        },
+        "list_struct_list": [
+          "list_struct_list_string",
+          "HTTP/1.1",
+        ]
+      },
+      [
+        "list_list_string",
+        "HTTP/1.1",
+        {
+          "list_list_struct_string": "plain_string_value",
+          "list_list_struct_protocol": "HTTP/1.1",
+        },
+        [
+          "list_list_list_string",
+          "HTTP/1.1",
+        ],
+      ],
+    ],
+  })EOF";
+
+  const ProtobufWkt::Struct src = TestUtility::jsonToStruct(json_string);
+  ObjectSharedPtr json = Factory::loadFromProtobufStruct(src);
+  const auto output_json = json->asJsonString();
+  EXPECT_TRUE(TestUtility::jsonStringEqual(output_json, json_string));
+}
+
+TEST_F(JsonLoaderTest, LoadFromStructUnknownValueCase) {
+  ProtobufWkt::Struct src;
+  ProtobufWkt::Value value_not_set;
+  (*src.mutable_fields())["field"] = value_not_set;
+  EXPECT_THROW_WITH_MESSAGE(Factory::loadFromProtobufStruct(src), Exception,
+                            "Protobuf value case not implemented");
 }
 
 } // namespace

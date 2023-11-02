@@ -72,6 +72,16 @@ envoy_cc_test(
 )
 
 envoy_cc_test(
+    name = "buffer_util_test",
+    srcs = ["buffer_util_test.cc"],
+    deps = [
+        ":utility_lib",
+        "//source/common/buffer:buffer_lib",
+        "//source/common/buffer:buffer_util_lib",
+    ],
+)
+
+envoy_cc_test(
     name = "watermark_buffer_test",
     srcs = ["watermark_buffer_test.cc"],
     deps = [
@@ -80,6 +90,18 @@ envoy_cc_test(
         "//source/common/buffer:watermark_buffer_lib",
         "//source/common/network:address_lib",
         "//test/test_common:test_runtime_lib",
+    ],
+)
+
+envoy_cc_test(
+    name = "buffer_memory_account_test",
+    srcs = ["buffer_memory_account_test.cc"],
+    deps = [
+        "//source/common/buffer:buffer_lib",
+        "//test/integration:tracked_watermark_buffer_lib",
+        "//test/mocks/buffer:buffer_mocks",
+        "//test/mocks/http:stream_reset_handler_mock",
+        "@envoy_api//envoy/config/overload/v3:pkg_cc_proto",
     ],
 )
 
@@ -100,6 +122,8 @@ envoy_cc_benchmark_binary(
     ],
     deps = [
         "//source/common/buffer:buffer_lib",
+        "//source/common/buffer:watermark_buffer_lib",
+        "@envoy_api//envoy/config/overload/v3:pkg_cc_proto",
     ],
 )
 

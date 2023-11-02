@@ -1,8 +1,7 @@
 #include <memory>
 
-#include "common/thread_local/thread_local_impl.h"
-
-#include "extensions/filters/common/lua/lua.h"
+#include "source/common/thread_local/thread_local_impl.h"
+#include "source/extensions/filters/common/lua/lua.h"
 
 #include "test/mocks/common.h"
 #include "test/mocks/thread_local/mocks.h"
@@ -85,6 +84,24 @@ TEST_F(LuaTest, CoroutineRefCounting) {
   EXPECT_CALL(*ref2.get(), onDestroy());
   ref2.reset();
   lua_gc(cr2->luaState(), LUA_GCCOLLECT, 0);
+}
+
+// Test that we don't crash when empty errors are used (see PR #15471)
+TEST_F(LuaTest, EmptyError) {
+  const std::string SCRIPT{R"EOF(
+    function callMe()
+      error()
+    end
+  )EOF"};
+
+  InSequence s;
+  setup(SCRIPT);
+
+  const int callMeRef = state_->getGlobalRef(state_->registerGlobal("callMe", initializers_));
+  EXPECT_NE(LUA_REFNIL, callMeRef);
+  CoroutinePtr cr1(state_->createCoroutine());
+  EXPECT_THROW_WITH_REGEX(cr1->start(callMeRef, 0, yield_callback_), EnvoyException,
+                          "unspecified lua error");
 }
 
 // Basic yield/resume functionality.

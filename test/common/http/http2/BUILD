@@ -13,7 +13,11 @@ envoy_package()
 
 envoy_cc_test(
     name = "codec_impl_test",
+    size = "large",
     srcs = ["codec_impl_test.cc"],
+    external_deps = [
+        "quiche_http2_adapter",
+    ],
     shard_count = 5,
     deps = [
         ":codec_impl_test_util",
@@ -24,6 +28,8 @@ envoy_cc_test(
         "//source/common/http/http2:codec_lib",
         "//source/common/runtime:runtime_lib",
         "//source/common/stats:stats_lib",
+        "//source/extensions/http/header_validators/envoy_default:header_validator_factory",
+        "//source/extensions/http/header_validators/envoy_default:http2_header_validator",
         "//test/common/http:common_lib",
         "//test/common/http/http2:http2_frame",
         "//test/common/stats:stat_test_utility_lib",
@@ -45,10 +51,14 @@ envoy_cc_test(
 envoy_cc_test_library(
     name = "codec_impl_test_util",
     hdrs = ["codec_impl_test_util.h"],
-    external_deps = ["abseil_optional"],
+    external_deps = [
+        "abseil_optional",
+        "quiche_http2_adapter",
+    ],
     deps = [
         "//source/common/http/http2:codec_lib",
         "//test/mocks:common_lib",
+        "//test/mocks/server:overload_manager_mocks",
     ],
 )
 
@@ -65,6 +75,7 @@ envoy_cc_test(
         "//test/common/upstream:utility_lib",
         "//test/mocks/event:event_mocks",
         "//test/mocks/http:http_mocks",
+        "//test/mocks/http:http_server_properties_cache_mocks",
         "//test/mocks/network:network_mocks",
         "//test/mocks/runtime:runtime_mocks",
         "//test/mocks/upstream:cluster_info_mocks",
@@ -78,10 +89,10 @@ envoy_cc_test_library(
     srcs = ["http2_frame.cc"],
     hdrs = ["http2_frame.h"],
     external_deps = [
-        "nghttp2",
+        "quiche_spdy_hpack",
     ],
     deps = [
-        "//include/envoy/http:metadata_interface_with_external_headers",
+        "//envoy/http:metadata_interface_with_external_headers",
         "//source/common/buffer:buffer_lib",
         "//source/common/common:assert_lib",
         "//source/common/common:hex_lib",
@@ -123,10 +134,11 @@ envoy_cc_test(
 )
 
 envoy_cc_test(
-    name = "metadata_encoder_decoder_test",
-    srcs = ["metadata_encoder_decoder_test.cc"],
+    name = "metadata_encoder_test",
+    srcs = ["metadata_encoder_test.cc"],
     external_deps = [
-        "nghttp2",
+        "quiche_http2_adapter",
+        "quiche_http2_test_tools",
     ],
     deps = [
         "//source/common/buffer:buffer_lib",
@@ -136,6 +148,7 @@ envoy_cc_test(
         "//source/common/runtime:runtime_lib",
         "//test/common/http/http2:http2_frame",
         "//test/test_common:logging_lib",
+        "//test/test_common:test_runtime_lib",
         "//test/test_common:utility_lib",
     ],
 )
@@ -144,7 +157,7 @@ envoy_cc_test(
     name = "http2_frame_test",
     srcs = ["http2_frame_test.cc"],
     deps = [
-        "//include/envoy/http:metadata_interface",
+        "//envoy/http:metadata_interface",
         "//source/common/http/http2:metadata_encoder_lib",
         "//test/common/http/http2:http2_frame",
     ],
@@ -195,6 +208,31 @@ envoy_cc_fuzz_test(
     ],
     deps = [
         ":hpack_fuzz_proto_cc_proto",
+        "//test/test_common:utility_lib",
+    ],
+)
+
+envoy_proto_library(
+    name = "http2_connection_proto",
+    srcs = ["http2_connection.proto"],
+    deps = ["//test/fuzz:common_proto"],
+)
+
+envoy_cc_fuzz_test(
+    name = "http2_connection_fuzz_test",
+    srcs = ["http2_connection_fuzz_test.cc"],
+    corpus = "http2_connection_corpus",
+    external_deps = [
+        "nghttp2",
+    ],
+    deps = [
+        ":http2_connection_proto_cc_proto",
+        "//source/common/http/http2:codec_lib",
+        "//test/common/http/http2:http2_frame",
+        "//test/mocks/http:http_mocks",
+        "//test/mocks/network:network_mocks",
+        "//test/mocks/server:overload_manager_mocks",
+        "//test/test_common:test_runtime_lib",
         "//test/test_common:utility_lib",
     ],
 )

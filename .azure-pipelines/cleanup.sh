@@ -2,9 +2,18 @@
 
 set -e
 
-# Temporary script to remove tools from Azure pipelines agent to create more disk space room.
-sudo apt-get update -y || true
-sudo apt-get purge -y --no-upgrade 'ghc-*' 'zulu-*-azure-jdk' 'libllvm*' 'mysql-*' 'dotnet-*' 'libgl1' \
-  'adoptopenjdk-*' 'azure-cli' 'google-chrome-stable' 'firefox' 'hhvm'
+echo "Disk space before cruft removal"
+df -h
 
-dpkg-query -Wf '${Installed-Size}\t${Package}\n' | sort -rn
+TO_REMOVE=(
+    /opt/hostedtoolcache
+    /usr/local/lib/android
+    /usr/local/.ghcup)
+
+for removal in "${TO_REMOVE[@]}"; do
+    echo "Removing: ${removal} ..."
+    sudo rm -rf "$removal"
+done
+
+echo "Disk space after cruft removal"
+df -h

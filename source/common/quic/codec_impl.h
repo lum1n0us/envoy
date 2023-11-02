@@ -3,10 +3,9 @@
 #include "envoy/http/codec.h"
 #include "envoy/registry/registry.h"
 
-#include "common/common/assert.h"
-#include "common/common/logger.h"
-#include "common/quic/envoy_quic_client_session.h"
-#include "common/quic/envoy_quic_server_session.h"
+#include "source/common/common/assert.h"
+#include "source/common/common/logger.h"
+#include "source/common/quic/quic_filter_manager_connection_impl.h"
 
 namespace Envoy {
 namespace Quic {
@@ -17,56 +16,22 @@ namespace Quic {
 class QuicHttpConnectionImplBase : public virtual Http::Connection,
                                    protected Logger::Loggable<Logger::Id::quic> {
 public:
-  QuicHttpConnectionImplBase(QuicFilterManagerConnectionImpl& quic_session)
-      : quic_session_(quic_session) {}
+  QuicHttpConnectionImplBase(QuicFilterManagerConnectionImpl& quic_session,
+                             Http::Http3::CodecStats& stats)
+      : quic_session_(quic_session), stats_(stats) {}
 
   // Http::Connection
   Http::Status dispatch(Buffer::Instance& /*data*/) override {
-    // Bypassed. QUIC connection already hands all data to streams.
-    NOT_REACHED_GCOVR_EXCL_LINE;
+    PANIC("not implemented"); // QUIC connection already hands all data to streams.
   }
   Http::Protocol protocol() override { return Http::Protocol::Http3; }
   // Returns true if the session has data to send but queued in connection or
   // stream send buffer.
-  bool wantsToWrite() override;
+  bool wantsToWrite() override { return quic_session_.bytesToSend() > 0; }
 
 protected:
   QuicFilterManagerConnectionImpl& quic_session_;
-};
-
-class QuicHttpServerConnectionImpl : public QuicHttpConnectionImplBase,
-                                     public Http::ServerConnection {
-public:
-  QuicHttpServerConnectionImpl(EnvoyQuicServerSession& quic_session,
-                               Http::ServerConnectionCallbacks& callbacks);
-
-  // Http::Connection
-  void goAway() override;
-  void shutdownNotice() override;
-  void onUnderlyingConnectionAboveWriteBufferHighWatermark() override;
-  void onUnderlyingConnectionBelowWriteBufferLowWatermark() override;
-
-private:
-  EnvoyQuicServerSession& quic_server_session_;
-};
-
-class QuicHttpClientConnectionImpl : public QuicHttpConnectionImplBase,
-                                     public Http::ClientConnection {
-public:
-  QuicHttpClientConnectionImpl(EnvoyQuicClientSession& session,
-                               Http::ConnectionCallbacks& callbacks);
-
-  // Http::ClientConnection
-  Http::RequestEncoder& newStream(Http::ResponseDecoder& response_decoder) override;
-
-  // Http::Connection
-  void goAway() override { NOT_REACHED_GCOVR_EXCL_LINE; }
-  void shutdownNotice() override { NOT_REACHED_GCOVR_EXCL_LINE; }
-  void onUnderlyingConnectionAboveWriteBufferHighWatermark() override;
-  void onUnderlyingConnectionBelowWriteBufferLowWatermark() override;
-
-private:
-  EnvoyQuicClientSession& quic_client_session_;
+  Http::Http3::CodecStats& stats_;
 };
 
 } // namespace Quic

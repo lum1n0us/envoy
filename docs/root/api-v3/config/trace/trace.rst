@@ -1,5 +1,7 @@
-HTTP Tracers
-==============
+.. _http_tracers:
+
+HTTP tracers
+============
 
 .. note::
 
@@ -10,3 +12,5 @@ HTTP Tracers
   :maxdepth: 2
 
   v3/*
+  opentelemetry/resource_detectors
+  opentelemetry/samplers

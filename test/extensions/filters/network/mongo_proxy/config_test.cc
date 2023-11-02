@@ -4,7 +4,7 @@
 #include "envoy/extensions/filters/network/mongo_proxy/v3/mongo_proxy.pb.validate.h"
 #include "envoy/type/v3/percent.pb.h"
 
-#include "extensions/filters/network/mongo_proxy/config.h"
+#include "source/extensions/filters/network/mongo_proxy/config.h"
 
 #include "test/mocks/server/factory_context.h"
 #include "test/test_common/utility.h"
@@ -91,7 +91,7 @@ TEST(MongoFilterConfigTest, InvalidExtraProperty) {
   test: a
   )EOF";
 
-  handleInvalidConfiguration(yaml_string, "test: Cannot find field");
+  handleInvalidConfiguration(yaml_string, "test");
 }
 
 TEST(MongoFilterConfigTest, EmptyConfig) {
@@ -145,7 +145,7 @@ TEST(MongoFilterConfigTest, InvalidFaultsDelayPercent) {
       fixed_delay: 1s
     )EOF";
 
-    handleInvalidConfiguration(yaml_string, R"(invalid value -1 for type TYPE_UINT32)");
+    handleInvalidConfiguration(yaml_string, "percentage");
   }
 }
 
@@ -160,7 +160,7 @@ TEST(MongoFilterConfigTest, InvalidFaultsType) {
       fixed_delay: 1s
     )EOF";
 
-    handleInvalidConfiguration(yaml_string, R"(invalid value "df" for type TYPE_UINT32)");
+    handleInvalidConfiguration(yaml_string, "numerator");
   }
 
   {
@@ -173,7 +173,7 @@ TEST(MongoFilterConfigTest, InvalidFaultsType) {
       fixed_delay: ab
     )EOF";
 
-    handleInvalidConfiguration(yaml_string, "Illegal duration format; duration must end with 's'");
+    handleInvalidConfiguration(yaml_string, "fixed_delay");
   }
 
   {
@@ -224,16 +224,6 @@ TEST(MongoFilterConfigTest, CorrectFaultConfigurationInProto) {
   Network::MockConnection connection;
   EXPECT_CALL(connection, addFilter(_));
   cb(connection);
-}
-
-// Test that the deprecated extension name still functions.
-TEST(MongoFilterConfigTest, DEPRECATED_FEATURE_TEST(DeprecatedExtensionFilterName)) {
-  const std::string deprecated_name = "envoy.mongo_proxy";
-
-  ASSERT_NE(
-      nullptr,
-      Registry::FactoryRegistry<Server::Configuration::NamedNetworkFilterConfigFactory>::getFactory(
-          deprecated_name));
 }
 
 } // namespace MongoProxy

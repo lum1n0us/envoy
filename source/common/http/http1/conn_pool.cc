@@ -1,4 +1,4 @@
-#include "common/http/http1/conn_pool.h"
+#include "source/common/http/http1/conn_pool.h"
 
 #include <cstdint>
 #include <list>
@@ -11,11 +11,11 @@
 #include "envoy/http/header_map.h"
 #include "envoy/upstream/upstream.h"
 
-#include "common/http/codec_client.h"
-#include "common/http/codes.h"
-#include "common/http/header_utility.h"
-#include "common/http/headers.h"
-#include "common/runtime/runtime_features.h"
+#include "source/common/http/codec_client.h"
+#include "source/common/http/codes.h"
+#include "source/common/http/header_utility.h"
+#include "source/common/http/headers.h"
+#include "source/common/runtime/runtime_features.h"
 
 #include "absl/strings/match.h"
 
@@ -24,9 +24,9 @@ namespace Http {
 namespace Http1 {
 
 ActiveClient::StreamWrapper::StreamWrapper(ResponseDecoder& response_decoder, ActiveClient& parent)
-    : RequestEncoderWrapper(parent.codec_client_->newStream(*this)),
+    : RequestEncoderWrapper(&parent.codec_client_->newStream(*this)),
       ResponseDecoderWrapper(response_decoder), parent_(parent) {
-  RequestEncoderWrapper::inner_.getStream().addCallbacks(*this);
+  RequestEncoderWrapper::inner_encoder_->getStream().addCallbacks(*this);
 }
 
 ActiveClient::StreamWrapper::~StreamWrapper() {
@@ -42,7 +42,7 @@ void ActiveClient::StreamWrapper::decodeHeaders(ResponseHeaderMapPtr&& headers, 
   close_connection_ =
       HeaderUtility::shouldCloseConnection(parent_.codec_client_->protocol(), *headers);
   if (close_connection_) {
-    parent_.parent().host()->cluster().stats().upstream_cx_close_notify_.inc();
+    parent_.parent().host()->cluster().trafficStats()->upstream_cx_close_notify_.inc();
   }
   ResponseDecoderWrapper::decodeHeaders(std::move(headers), end_stream);
 }
@@ -63,7 +63,7 @@ void ActiveClient::StreamWrapper::onDecodeComplete() {
     pool->scheduleOnUpstreamReady();
     parent_.stream_wrapper_.reset();
 
-    pool->checkForDrained();
+    pool->checkForIdleAndCloseIdleConnsIfDraining();
   }
 }
 
@@ -71,21 +71,15 @@ void ActiveClient::StreamWrapper::onResetStream(StreamResetReason, absl::string_
   parent_.codec_client_->close();
 }
 
-ActiveClient::ActiveClient(HttpConnPoolImplBase& parent)
-    : Envoy::Http::ActiveClient(
-          parent, parent.host()->cluster().maxRequestsPerConnection(),
-          1 // HTTP1 always has a concurrent-request-limit of 1 per connection.
-      ) {
-  parent.host()->cluster().stats().upstream_cx_http1_total_.inc();
+ActiveClient::ActiveClient(HttpConnPoolImplBase& parent,
+                           OptRef<Upstream::Host::CreateConnectionData> data)
+    : Envoy::Http::ActiveClient(parent, parent.host()->cluster().maxRequestsPerConnection(),
+                                /* effective_concurrent_stream_limit */ 1,
+                                /* configured_concurrent_stream_limit */ 1, data) {
+  parent.host()->cluster().trafficStats()->upstream_cx_http1_total_.inc();
 }
 
-ActiveClient::ActiveClient(HttpConnPoolImplBase& parent, Upstream::Host::CreateConnectionData& data)
-    : Envoy::Http::ActiveClient(
-          parent, parent.host()->cluster().maxRequestsPerConnection(),
-          1, // HTTP1 always has a concurrent-request-limit of 1 per connection.
-          data) {
-  parent.host()->cluster().stats().upstream_cx_http1_total_.inc();
-}
+ActiveClient::~ActiveClient() { ASSERT(!stream_wrapper_.get()); }
 
 bool ActiveClient::closingWithIncompleteStream() const {
   return (stream_wrapper_ != nullptr) && (!stream_wrapper_->decode_complete_);
@@ -101,19 +95,21 @@ ConnectionPool::InstancePtr
 allocateConnPool(Event::Dispatcher& dispatcher, Random::RandomGenerator& random_generator,
                  Upstream::HostConstSharedPtr host, Upstream::ResourcePriority priority,
                  const Network::ConnectionSocket::OptionsSharedPtr& options,
-                 const Network::TransportSocketOptionsSharedPtr& transport_socket_options,
+                 const Network::TransportSocketOptionsConstSharedPtr& transport_socket_options,
                  Upstream::ClusterConnectivityState& state) {
   return std::make_unique<FixedHttpConnPoolImpl>(
       std::move(host), std::move(priority), dispatcher, options, transport_socket_options,
       random_generator, state,
-      [](HttpConnPoolImplBase* pool) { return std::make_unique<ActiveClient>(*pool); },
+      [](HttpConnPoolImplBase* pool) {
+        return std::make_unique<ActiveClient>(*pool, absl::nullopt);
+      },
       [](Upstream::Host::CreateConnectionData& data, HttpConnPoolImplBase* pool) {
         CodecClientPtr codec{new CodecClientProd(
-            CodecClient::Type::HTTP1, std::move(data.connection_), data.host_description_,
-            pool->dispatcher(), pool->randomGenerator())};
+            CodecType::HTTP1, std::move(data.connection_), data.host_description_,
+            pool->dispatcher(), pool->randomGenerator(), pool->transportSocketOptions())};
         return codec;
       },
-      std::vector<Protocol>{Protocol::Http11});
+      std::vector<Protocol>{Protocol::Http11}, absl::nullopt, nullptr);
 }
 
 } // namespace Http1

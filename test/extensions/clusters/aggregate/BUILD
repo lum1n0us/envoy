@@ -14,9 +14,10 @@ envoy_package()
 envoy_extension_cc_test(
     name = "cluster_test",
     srcs = ["cluster_test.cc"],
-    extension_name = "envoy.clusters.aggregate",
+    extension_names = ["envoy.clusters.aggregate"],
     deps = [
         "//source/extensions/clusters/aggregate:cluster",
+        "//source/extensions/load_balancing_policies/cluster_provided:config",
         "//source/extensions/transport_sockets/raw_buffer:config",
         "//test/common/upstream:utility_lib",
         "//test/mocks/protobuf:protobuf_mocks",
@@ -25,6 +26,7 @@ envoy_extension_cc_test(
         "//test/mocks/ssl:ssl_mocks",
         "//test/mocks/upstream:load_balancer_context_mock",
         "//test/mocks/upstream:load_balancer_mocks",
+        "//test/mocks/upstream:priority_set_mocks",
         "//test/test_common:environment_lib",
         "//test/test_common:simulated_time_system_lib",
         "@envoy_api//envoy/config/cluster/v3:pkg_cc_proto",
@@ -35,12 +37,15 @@ envoy_extension_cc_test(
 envoy_extension_cc_test(
     name = "cluster_update_test",
     srcs = ["cluster_update_test.cc"],
-    extension_name = "envoy.clusters.aggregate",
+    extension_names = ["envoy.clusters.aggregate"],
     deps = [
         "//source/common/router:context_lib",
         "//source/common/upstream:cluster_factory_lib",
         "//source/common/upstream:cluster_manager_lib",
         "//source/extensions/clusters/aggregate:cluster",
+        "//source/extensions/clusters/static:static_cluster_lib",
+        "//source/extensions/load_balancing_policies/cluster_provided:config",
+        "//source/extensions/load_balancing_policies/round_robin:config",
         "//source/extensions/transport_sockets/raw_buffer:config",
         "//test/common/upstream:test_cluster_manager",
         "//test/common/upstream:utility_lib",
@@ -57,8 +62,9 @@ envoy_extension_cc_test(
 
 envoy_extension_cc_test(
     name = "cluster_integration_test",
+    size = "large",
     srcs = ["cluster_integration_test.cc"],
-    extension_name = "envoy.clusters.aggregate",
+    extension_names = ["envoy.clusters.aggregate"],
     deps = [
         "//source/common/config:protobuf_link_hacks",
         "//source/common/protobuf:utility_lib",
@@ -66,6 +72,7 @@ envoy_extension_cc_test(
         "//source/extensions/filters/network/tcp_proxy:config",
         "//source/extensions/retry/priority/previous_priorities:config",
         "//test/common/grpc:grpc_client_integration_lib",
+        "//test/config:v2_link_hacks",
         "//test/integration:http_integration_lib",
         "//test/integration:integration_lib",
         "//test/mocks/runtime:runtime_mocks",

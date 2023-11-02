@@ -1,4 +1,4 @@
-#include "common/network/cidr_range.h"
+#include "source/common/network/cidr_range.h"
 
 #include <array>
 #include <cstdint>
@@ -7,14 +7,13 @@
 
 #include "envoy/common/exception.h"
 #include "envoy/common/platform.h"
-#include "envoy/config/core/v3/address.pb.h"
 
-#include "common/common/assert.h"
-#include "common/common/fmt.h"
-#include "common/common/safe_memcpy.h"
-#include "common/common/utility.h"
-#include "common/network/address_impl.h"
-#include "common/network/utility.h"
+#include "source/common/common/assert.h"
+#include "source/common/common/fmt.h"
+#include "source/common/common/safe_memcpy.h"
+#include "source/common/common/utility.h"
+#include "source/common/network/address_impl.h"
+#include "source/common/network/utility.h"
 
 namespace Envoy {
 namespace Network {
@@ -32,8 +31,6 @@ CidrRange::CidrRange(InstanceConstSharedPtr address, int length)
     ASSERT(length_ >= 0);
   }
 }
-
-CidrRange::CidrRange(const CidrRange& other) = default;
 
 CidrRange& CidrRange::operator=(const CidrRange& other) = default;
 
@@ -104,7 +101,7 @@ std::string CidrRange::asString() const {
 // static
 CidrRange CidrRange::create(InstanceConstSharedPtr address, int length) {
   InstanceConstSharedPtr ptr = truncateIpAddressAndLength(std::move(address), &length);
-  return CidrRange(std::move(ptr), length);
+  return {std::move(ptr), length};
 }
 
 // static
@@ -113,6 +110,10 @@ CidrRange CidrRange::create(const std::string& address, int length) {
 }
 
 CidrRange CidrRange::create(const envoy::config::core::v3::CidrRange& cidr) {
+  return create(Utility::parseInternetAddress(cidr.address_prefix()), cidr.prefix_len().value());
+}
+
+CidrRange CidrRange::create(const xds::core::v3::CidrRange& cidr) {
   return create(Utility::parseInternetAddress(cidr.address_prefix()), cidr.prefix_len().value());
 }
 
@@ -131,7 +132,7 @@ CidrRange CidrRange::create(const std::string& range) {
       }
     }
   }
-  return CidrRange(nullptr, -1);
+  return {nullptr, -1};
 }
 
 // static
@@ -156,6 +157,7 @@ InstanceConstSharedPtr CidrRange::truncateIpAddressAndLength(InstanceConstShared
     uint32_t ip4 = ntohl(address->ip()->ipv4()->address());
     ip4 &= ~0U << (32 - length);
     sockaddr_in sa4;
+    memset(&sa4, 0, sizeof(sa4));
     sa4.sin_family = AF_INET;
     sa4.sin_port = htons(0);
     sa4.sin_addr.s_addr = htonl(ip4);
@@ -172,6 +174,7 @@ InstanceConstSharedPtr CidrRange::truncateIpAddressAndLength(InstanceConstShared
       return std::make_shared<Ipv6Instance>(uint32_t(0));
     }
     sockaddr_in6 sa6;
+    memset(&sa6, 0, sizeof(sa6));
     sa6.sin6_family = AF_INET6;
     sa6.sin6_port = htons(0);
 
@@ -188,16 +191,17 @@ InstanceConstSharedPtr CidrRange::truncateIpAddressAndLength(InstanceConstShared
     return std::make_shared<Ipv6Instance>(sa6);
   }
   }
-  NOT_REACHED_GCOVR_EXCL_LINE;
+  PANIC_DUE_TO_CORRUPT_ENUM;
 }
 
 IpList::IpList(const Protobuf::RepeatedPtrField<envoy::config::core::v3::CidrRange>& cidrs) {
+  ip_list_.reserve(cidrs.size());
   for (const envoy::config::core::v3::CidrRange& entry : cidrs) {
     CidrRange list_entry = CidrRange::create(entry);
     if (list_entry.isValid()) {
-      ip_list_.push_back(list_entry);
+      ip_list_.push_back(std::move(list_entry));
     } else {
-      throw EnvoyException(
+      throwEnvoyExceptionOrPanic(
           fmt::format("invalid ip/mask combo '{}/{}' (format is <ip>/<# mask bits>)",
                       entry.address_prefix(), entry.prefix_len().value()));
     }

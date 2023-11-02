@@ -2,14 +2,12 @@
 
 #include "envoy/event/file_event.h"
 
-#include "common/event/dispatcher_impl.h"
-
-#include "extensions/io_socket/user_space/file_event_impl.h"
-#include "extensions/io_socket/user_space/io_handle.h"
+#include "source/common/event/dispatcher_impl.h"
+#include "source/extensions/io_socket/user_space/file_event_impl.h"
+#include "source/extensions/io_socket/user_space/io_handle.h"
 
 #include "test/mocks/common.h"
 #include "test/test_common/environment.h"
-#include "test/test_common/test_runtime.h"
 #include "test/test_common/utility.h"
 
 #include "gmock/gmock.h"
@@ -52,6 +50,7 @@ public:
   MOCK_METHOD(bool, isPeerWritable, (), (const));
   MOCK_METHOD(void, onPeerBufferLowWatermark, ());
   MOCK_METHOD(bool, isReadable, (), (const));
+  MOCK_METHOD(PassthroughStateSharedPtr, passthroughState, ());
 };
 
 class FileEventImplTest : public testing::Test {
@@ -420,8 +419,8 @@ TEST_F(FileEventImplTest, NotImplementedEmulatedEdge) {
   user_file_event_ = std::make_unique<FileEventImpl>(
       *dispatcher_, [this](uint32_t arg) { ready_cb_.called(arg); },
       Event::FileReadyType::Write | Event::FileReadyType::Closed, io_source_);
-  EXPECT_DEATH({ user_file_event_->registerEventIfEmulatedEdge(0); }, "not implemented");
-  EXPECT_DEATH({ user_file_event_->unregisterEventIfEmulatedEdge(0); }, "not implemented");
+  user_file_event_->registerEventIfEmulatedEdge(0);
+  user_file_event_->unregisterEventIfEmulatedEdge(0);
 }
 } // namespace
 } // namespace UserSpace

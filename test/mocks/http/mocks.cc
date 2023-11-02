@@ -23,8 +23,8 @@ MockServerConnectionCallbacks::MockServerConnectionCallbacks() = default;
 MockServerConnectionCallbacks::~MockServerConnectionCallbacks() = default;
 
 MockFilterManagerCallbacks::MockFilterManagerCallbacks() {
-  ON_CALL(*this, continueHeaders()).WillByDefault(Invoke([this]() -> ResponseHeaderMapOptRef {
-    return makeOptRefFromPtr(continue_headers_.get());
+  ON_CALL(*this, informationalHeaders()).WillByDefault(Invoke([this]() -> ResponseHeaderMapOptRef {
+    return makeOptRefFromPtr(informational_headers_.get());
   }));
   ON_CALL(*this, responseHeaders()).WillByDefault(Invoke([this]() -> ResponseHeaderMapOptRef {
     return makeOptRefFromPtr(response_headers_.get());
@@ -47,6 +47,14 @@ MockServerConnection::~MockServerConnection() = default;
 MockClientConnection::MockClientConnection() = default;
 MockClientConnection::~MockClientConnection() = default;
 
+MockFilterChainManager::MockFilterChainManager() {
+  ON_CALL(*this, applyFilterFactoryCb(_, _))
+      .WillByDefault(
+          Invoke([this](FilterContext, FilterFactoryCb& factory) { factory(callbacks_); }));
+}
+
+MockFilterChainManager::~MockFilterChainManager() = default;
+
 MockFilterChainFactory::MockFilterChainFactory() = default;
 MockFilterChainFactory::~MockFilterChainFactory() = default;
 
@@ -55,8 +63,11 @@ template <class T> static void initializeMockStreamFilterCallbacks(T& callbacks)
   callbacks.route_.reset(new NiceMock<Router::MockRoute>());
   ON_CALL(callbacks, dispatcher()).WillByDefault(ReturnRef(callbacks.dispatcher_));
   ON_CALL(callbacks, streamInfo()).WillByDefault(ReturnRef(callbacks.stream_info_));
-  ON_CALL(callbacks, clusterInfo()).WillByDefault(Return(callbacks.cluster_info_));
   ON_CALL(callbacks, route()).WillByDefault(Return(callbacks.route_));
+  ON_CALL(callbacks, clusterInfo()).WillByDefault(Return(callbacks.cluster_info_));
+  ON_CALL(callbacks, downstreamCallbacks())
+      .WillByDefault(
+          Return(OptRef<DownstreamStreamFilterCallbacks>{callbacks.downstream_callbacks_}));
 }
 
 MockStreamDecoderFilterCallbacks::MockStreamDecoderFilterCallbacks() {
@@ -74,7 +85,8 @@ MockStreamDecoderFilterCallbacks::MockStreamDecoderFilterCallbacks() {
       }));
 
   ON_CALL(*this, activeSpan()).WillByDefault(ReturnRef(active_span_));
-  ON_CALL(*this, tracingConfig()).WillByDefault(ReturnRef(tracing_config_));
+  ON_CALL(*this, tracingConfig())
+      .WillByDefault(Return(makeOptRef<const Tracing::Config>(tracing_config_)));
   ON_CALL(*this, scope()).WillByDefault(ReturnRef(scope_));
   ON_CALL(*this, sendLocalReply(_, _, _, _, _))
       .WillByDefault(Invoke([this](Code code, absl::string_view body,
@@ -85,6 +97,25 @@ MockStreamDecoderFilterCallbacks::MockStreamDecoderFilterCallbacks() {
       }));
   ON_CALL(*this, routeConfig())
       .WillByDefault(Return(absl::optional<Router::ConfigConstSharedPtr>()));
+  ON_CALL(*this, upstreamOverrideHost()).WillByDefault(Return(absl::optional<absl::string_view>()));
+
+  ON_CALL(*this, mostSpecificPerFilterConfig())
+      .WillByDefault(Invoke([this]() -> const Router::RouteSpecificFilterConfig* {
+        auto route = this->route();
+        if (route == nullptr) {
+          return nullptr;
+        }
+        return route->mostSpecificPerFilterConfig("envoy.filter");
+      }));
+  ON_CALL(*this, traversePerFilterConfig(_))
+      .WillByDefault(
+          Invoke([this](std::function<void(const Router::RouteSpecificFilterConfig&)> cb) {
+            auto route = this->route();
+            if (route == nullptr) {
+              return;
+            }
+            route->traversePerFilterConfig("envoy.filter", cb);
+          }));
 }
 
 MockStreamDecoderFilterCallbacks::~MockStreamDecoderFilterCallbacks() = default;
@@ -113,8 +144,27 @@ MockStreamEncoderFilterCallbacks::MockStreamEncoderFilterCallbacks() {
   initializeMockStreamFilterCallbacks(*this);
   ON_CALL(*this, encodingBuffer()).WillByDefault(Invoke(&buffer_, &Buffer::InstancePtr::get));
   ON_CALL(*this, activeSpan()).WillByDefault(ReturnRef(active_span_));
-  ON_CALL(*this, tracingConfig()).WillByDefault(ReturnRef(tracing_config_));
+  ON_CALL(*this, tracingConfig())
+      .WillByDefault(Return(makeOptRef<const Tracing::Config>(tracing_config_)));
   ON_CALL(*this, scope()).WillByDefault(ReturnRef(scope_));
+
+  ON_CALL(*this, mostSpecificPerFilterConfig())
+      .WillByDefault(Invoke([this]() -> const Router::RouteSpecificFilterConfig* {
+        auto route = this->route();
+        if (route == nullptr) {
+          return nullptr;
+        }
+        return route->mostSpecificPerFilterConfig("envoy.filter");
+      }));
+  ON_CALL(*this, traversePerFilterConfig(_))
+      .WillByDefault(
+          Invoke([this](std::function<void(const Router::RouteSpecificFilterConfig&)> cb) {
+            auto route = this->route();
+            if (route == nullptr) {
+              return;
+            }
+            route->traversePerFilterConfig("envoy.filter", cb);
+          }));
 }
 
 MockStreamEncoderFilterCallbacks::~MockStreamEncoderFilterCallbacks() = default;
@@ -163,7 +213,11 @@ MockAsyncClientRequest::MockAsyncClientRequest(MockAsyncClient* client) : client
 MockAsyncClientRequest::~MockAsyncClientRequest() { client_->onRequestDestroy(); }
 
 MockAsyncClientStream::MockAsyncClientStream() = default;
-MockAsyncClientStream::~MockAsyncClientStream() = default;
+MockAsyncClientStream::~MockAsyncClientStream() {
+  if (destructor_callback_) {
+    (*destructor_callback_)();
+  }
+};
 
 MockFilterChainFactoryCallbacks::MockFilterChainFactoryCallbacks() = default;
 MockFilterChainFactoryCallbacks::~MockFilterChainFactoryCallbacks() = default;
@@ -173,11 +227,11 @@ MockFilterChainFactoryCallbacks::~MockFilterChainFactoryCallbacks() = default;
 namespace Http {
 
 IsSubsetOfHeadersMatcher IsSubsetOfHeaders(const HeaderMap& expected_headers) {
-  return IsSubsetOfHeadersMatcher(expected_headers);
+  return {expected_headers};
 }
 
 IsSupersetOfHeadersMatcher IsSupersetOfHeaders(const HeaderMap& expected_headers) {
-  return IsSupersetOfHeadersMatcher(expected_headers);
+  return {expected_headers};
 }
 
 MockReceivedSettings::MockReceivedSettings() {

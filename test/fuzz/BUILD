@@ -1,13 +1,14 @@
 load(
+    "@rules_fuzzing//fuzzing:cc_defs.bzl",
+    "cc_fuzzing_engine",
+)
+load(
     "//bazel:envoy_build_system.bzl",
     "envoy_cc_test",
     "envoy_cc_test_library",
     "envoy_package",
     "envoy_proto_library",
-)
-load(
-    "@rules_fuzzing//fuzzing:cc_defs.bzl",
-    "cc_fuzzing_engine",
+    "envoy_select_signal_trace",
 )
 
 licenses(["notice"])  # Apache 2
@@ -33,12 +34,10 @@ envoy_cc_test_library(
         "//source/common/common:assert_lib",
         "//source/common/common:minimal_logger_lib",
         "//source/common/stats:isolated_store_lib",
+        "//test:test_listener_lib",
         "//test/test_common:environment_lib",
         "//test/test_common:utility_lib",
-    ] + select({
-        "//bazel:disable_signal_trace": [],
-        "//conditions:default": ["//source/common/signal:sigaction_lib"],
-    }),
+    ] + envoy_select_signal_trace(["//source/common/signal:sigaction_lib"]),
 )
 
 envoy_cc_test_library(
@@ -60,10 +59,15 @@ envoy_cc_test_library(
 
 envoy_cc_test_library(
     name = "utility_lib",
+    srcs = ["utility.cc"],
     hdrs = ["utility.h"],
+    external_deps = [
+        "quiche_http2_adapter",
+    ],
     deps = [
         ":common_proto_cc_proto",
         "//source/common/common:empty_string",
+        "//source/common/common:logger_lib",
         "//source/common/network:resolver_lib",
         "//source/common/network:utility_lib",
         "//test/common/stream_info:test_util",
@@ -75,10 +79,39 @@ envoy_cc_test_library(
 )
 
 envoy_cc_test_library(
+    name = "mutable_visitor_lib",
+    srcs = ["mutable_visitor.cc"],
+    hdrs = ["mutable_visitor.h"],
+    deps = [
+        "//source/common/protobuf",
+        "//source/common/protobuf:message_validator_lib",
+        "//source/common/protobuf:utility_lib_header",
+        "//source/common/protobuf:visitor_lib",
+        "@com_github_cncf_udpa//udpa/type/v1:pkg_cc_proto",
+        "@com_github_cncf_udpa//xds/type/v3:pkg_cc_proto",
+        "@com_google_absl//absl/cleanup",
+    ],
+)
+
+envoy_cc_test_library(
+    name = "validated_input_generator_lib",
+    srcs = ["validated_input_generator.cc"],
+    hdrs = ["validated_input_generator.h"],
+    deps = [
+        "//test/fuzz:mutable_visitor_lib",
+        "//test/fuzz:random_lib",
+        "@com_envoyproxy_protoc_gen_validate//validate:cc_validate",
+        "@com_github_cncf_udpa//udpa/type/v1:pkg_cc_proto",
+        "@com_github_cncf_udpa//xds/type/v3:pkg_cc_proto",
+        "@com_github_google_libprotobuf_mutator//:libprotobuf_mutator",
+    ],
+)
+
+envoy_cc_test_library(
     name = "random_lib",
     hdrs = ["random.h"],
     deps = [
-        "//include/envoy/common:random_generator_interface",
+        "//envoy/common:random_generator_interface",
         "//source/common/common:assert_lib",
         "//source/common/common:minimal_logger_lib",
     ],

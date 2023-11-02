@@ -2,12 +2,11 @@
 
 #include "envoy/buffer/buffer.h"
 
-#include "common/buffer/buffer_impl.h"
-#include "common/common/logger.h"
-
-#include "extensions/filters/network/dubbo_proxy/decoder_event_handler.h"
-#include "extensions/filters/network/dubbo_proxy/protocol.h"
-#include "extensions/filters/network/dubbo_proxy/serializer.h"
+#include "source/common/buffer/buffer_impl.h"
+#include "source/common/common/logger.h"
+#include "source/extensions/filters/network/dubbo_proxy/decoder_event_handler.h"
+#include "source/extensions/filters/network/dubbo_proxy/protocol.h"
+#include "source/extensions/filters/network/dubbo_proxy/serializer.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -72,7 +71,7 @@ public:
   };
 
   DecoderStateMachine(Protocol& protocol, Delegate& delegate)
-      : protocol_(protocol), delegate_(delegate), state_(ProtocolState::OnDecodeStreamHeader) {}
+      : protocol_(protocol), delegate_(delegate) {}
 
   /**
    * Consumes as much data from the configured Buffer as possible and executes the decoding state
@@ -113,7 +112,7 @@ private:
   Protocol& protocol_;
   Delegate& delegate_;
 
-  ProtocolState state_;
+  ProtocolState state_{ProtocolState::OnDecodeStreamHeader};
   ActiveStream* active_stream_{nullptr};
 };
 

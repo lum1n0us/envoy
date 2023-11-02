@@ -5,8 +5,8 @@
 #include "envoy/registry/registry.h"
 #include "envoy/server/filter_config.h"
 
-#include "extensions/filters/listener/original_dst/original_dst.h"
-#include "extensions/filters/listener/well_known_names.h"
+#include "source/common/network/filter_state_dst_address.h"
+#include "source/extensions/filters/listener/original_dst/original_dst.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -51,7 +51,7 @@ public:
     return std::make_unique<envoy::extensions::filters::listener::original_dst::v3::OriginalDst>();
   }
 
-  std::string name() const override { return ListenerFilterNames::get().OriginalDst; }
+  std::string name() const override { return FilterNames::get().Name; }
 };
 
 /**
@@ -59,6 +59,20 @@ public:
  */
 REGISTER_FACTORY(OriginalDstConfigFactory, Server::Configuration::NamedListenerFilterConfigFactory){
     "envoy.listener.original_dst"};
+
+class OriginalDstLocalFilterStateFactory : public Network::BaseAddressObjectFactory {
+public:
+  std::string name() const override { return FilterNames::get().LocalFilterStateKey; }
+};
+
+REGISTER_FACTORY(OriginalDstLocalFilterStateFactory, StreamInfo::FilterState::ObjectFactory);
+
+class OriginalDstRemoteFilterStateFactory : public Network::BaseAddressObjectFactory {
+public:
+  std::string name() const override { return FilterNames::get().RemoteFilterStateKey; }
+};
+
+REGISTER_FACTORY(OriginalDstRemoteFilterStateFactory, StreamInfo::FilterState::ObjectFactory);
 
 } // namespace OriginalDst
 } // namespace ListenerFilters

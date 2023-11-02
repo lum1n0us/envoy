@@ -1,12 +1,12 @@
+#pragma once
+
 #include "envoy/extensions/access_loggers/stream/v3/stream.pb.h"
 #include "envoy/registry/registry.h"
 
-#include "common/access_log/access_log_impl.h"
-#include "common/protobuf/protobuf.h"
-
-#include "extensions/access_loggers/common/file_access_log_impl.h"
-#include "extensions/access_loggers/stream/config.h"
-#include "extensions/access_loggers/well_known_names.h"
+#include "source/common/access_log/access_log_impl.h"
+#include "source/common/protobuf/protobuf.h"
+#include "source/extensions/access_loggers/common/file_access_log_impl.h"
+#include "source/extensions/access_loggers/stream/config.h"
 
 #include "test/mocks/server/factory_context.h"
 #include "test/test_common/utility.h"
@@ -44,8 +44,8 @@ protected:
     absl::Time abslStartTime =
         TestUtility::parseTime("Dec 18 01:50:34 2018 GMT", "%b %e %H:%M:%S %Y GMT");
     stream_info_.start_time_ = absl::ToChronoTime(abslStartTime);
-    EXPECT_CALL(stream_info_, upstreamHost()).WillRepeatedly(Return(nullptr));
-    stream_info_.response_code_ = 200;
+    stream_info_.upstreamInfo()->setUpstreamHost(nullptr);
+    stream_info_.setResponseCode(200);
 
     EXPECT_CALL(*file, write(_)).WillOnce(Invoke([expected, is_json](absl::string_view got) {
       if (is_json) {
@@ -54,7 +54,8 @@ protected:
         EXPECT_EQ(got, expected);
       }
     }));
-    logger->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+    logger->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+                AccessLog::AccessLogType::NotSet);
   }
 
   Http::TestRequestHeaderMapImpl request_headers_{{":method", "GET"}, {":path", "/bar/foo"}};

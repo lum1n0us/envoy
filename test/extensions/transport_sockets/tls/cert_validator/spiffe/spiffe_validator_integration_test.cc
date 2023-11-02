@@ -2,7 +2,7 @@
 
 #include <memory>
 
-#include "extensions/transport_sockets/tls/context_manager_impl.h"
+#include "source/extensions/transport_sockets/tls/context_manager_impl.h"
 
 #include "test/integration/integration.h"
 
@@ -43,7 +43,7 @@ Network::ClientConnectionPtr SslSPIFFECertValidatorIntegrationTest::makeSslClien
       createClientSslTransportSocketFactory(modified_options, *context_manager_, *api_);
   return dispatcher_->createClientConnection(
       address, Network::Address::InstanceConstSharedPtr(),
-      client_transport_socket_factory_ptr->createTransportSocket({}), nullptr);
+      client_transport_socket_factory_ptr->createTransportSocket({}, nullptr), nullptr, nullptr);
 }
 
 void SslSPIFFECertValidatorIntegrationTest::checkVerifyErrorCouter(uint64_t value) {
@@ -51,6 +51,26 @@ void SslSPIFFECertValidatorIntegrationTest::checkVerifyErrorCouter(uint64_t valu
       test_server_->counter(listenerStatPrefix("ssl.fail_verify_error"));
   EXPECT_EQ(value, counter->value());
   counter->reset();
+}
+
+void SslSPIFFECertValidatorIntegrationTest::addStringMatcher(
+    const envoy::type::matcher::v3::StringMatcher& matcher) {
+  san_matchers_.emplace_back();
+  *san_matchers_.back().mutable_matcher() = matcher;
+  san_matchers_.back().set_san_type(
+      envoy::extensions::transport_sockets::tls::v3::SubjectAltNameMatcher::DNS);
+  san_matchers_.emplace_back();
+  *san_matchers_.back().mutable_matcher() = matcher;
+  san_matchers_.back().set_san_type(
+      envoy::extensions::transport_sockets::tls::v3::SubjectAltNameMatcher::URI);
+  san_matchers_.emplace_back();
+  *san_matchers_.back().mutable_matcher() = matcher;
+  san_matchers_.back().set_san_type(
+      envoy::extensions::transport_sockets::tls::v3::SubjectAltNameMatcher::EMAIL);
+  san_matchers_.emplace_back();
+  *san_matchers_.back().mutable_matcher() = matcher;
+  san_matchers_.back().set_san_type(
+      envoy::extensions::transport_sockets::tls::v3::SubjectAltNameMatcher::IP_ADDRESS);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -124,7 +144,7 @@ typed_config:
 
   envoy::type::matcher::v3::StringMatcher matcher;
   matcher.set_prefix("spiffe://lyft.com/");
-  san_matchers_ = {matcher};
+  addStringMatcher(matcher);
 
   ConnectionCreationFunction creator = [&]() -> Network::ClientConnectionPtr {
     return makeSslClientConnection({});
@@ -152,7 +172,7 @@ typed_config:
   matcher.set_prefix("spiffe://example.com/");
   // The cert has "DNS.1 = lyft.com" but SPIFFE validator must ignore SAN types other than URI.
   matcher.set_prefix("www.lyft.com");
-  san_matchers_ = {matcher};
+  addStringMatcher(matcher);
   initialize();
   auto conn = makeSslClientConnection({});
   if (tls_version_ == envoy::extensions::transport_sockets::tls::v3::TlsParameters::TLSv1_2) {
@@ -163,7 +183,10 @@ typed_config:
     ASSERT_TRUE(codec->waitForDisconnect());
     codec->close();
   }
-  checkVerifyErrorCouter(1);
+  Stats::CounterSharedPtr counter =
+      test_server_->counter(listenerStatPrefix("ssl.fail_verify_san"));
+  EXPECT_EQ(1u, counter->value());
+  counter->reset();
 }
 
 // Client certificate has expired and the config does NOT allow expired certificates, so this case
@@ -223,8 +246,8 @@ typed_config:
   checkVerifyErrorCouter(1);
 }
 
-// clientcert.pem's san is "spiffe://lyft.com/frontend-team" but the corresponding trust bundle does
-// not match with the client cert. So this should also be rejected.
+// clientcert.pem's san is "spiffe://lyft.com/frontend-team" but the corresponding trust bundle
+// does not match with the client cert. So this should also be rejected.
 TEST_P(SslSPIFFECertValidatorIntegrationTest, ServerRsaSPIFFEValidatorRejected2) {
   auto typed_conf = new envoy::config::core::v3::TypedExtensionConfig();
   TestUtility::loadFromYaml(TestEnvironment::substitute(R"EOF(

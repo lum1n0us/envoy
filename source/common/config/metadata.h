@@ -10,16 +10,17 @@
 #include "envoy/singleton/manager.h"
 #include "envoy/type/metadata/v3/metadata.pb.h"
 
-#include "common/protobuf/protobuf.h"
-#include "common/shared_pool/shared_pool.h"
+#include "source/common/protobuf/protobuf.h"
+#include "source/common/shared_pool/shared_pool.h"
 
 #include "absl/container/node_hash_map.h"
 
 namespace Envoy {
 namespace Config {
 
-using ConstMetadataSharedPoolSharedPtr = std::shared_ptr<
-    SharedPool::ObjectSharedPool<const envoy::config::core::v3::Metadata, MessageUtil>>;
+using ConstMetadataSharedPoolSharedPtr =
+    std::shared_ptr<SharedPool::ObjectSharedPool<const envoy::config::core::v3::Metadata,
+                                                 MessageUtil, MessageUtil>>;
 
 /**
  * MetadataKey presents the key name and path to retrieve value from metadata.
@@ -116,8 +117,20 @@ protected:
    */
   void populateFrom(const envoy::config::core::v3::Metadata& metadata) {
     auto& data_by_key = metadata.filter_metadata();
+    auto& typed_data_by_key = metadata.typed_filter_metadata();
     for (const auto& [factory_name, factory] :
          Registry::FactoryRegistry<factoryClass>::factories()) {
+      const auto& typed_meta_iter = typed_data_by_key.find(factory_name);
+      // If the key exists in Any metadata, and parse() does not return nullptr,
+      // populate data_.
+      if (typed_meta_iter != typed_data_by_key.end()) {
+        auto result = factory->parse(typed_meta_iter->second);
+        if (result != nullptr) {
+          data_[factory->name()] = std::move(result);
+          continue;
+        }
+      }
+      // Fall back cases to parsing Struct metadata and populate data_.
       const auto& meta_iter = data_by_key.find(factory_name);
       if (meta_iter != data_by_key.end()) {
         data_[factory->name()] = factory->parse(meta_iter->second);
@@ -127,6 +140,20 @@ protected:
 
   absl::node_hash_map<std::string, std::unique_ptr<const TypedMetadata::Object>> data_;
 };
+
+// MetadataPack is struct that contains both the proto and typed metadata.
+template <class FactoryClass> struct MetadataPack {
+  MetadataPack(const envoy::config::core::v3::Metadata& metadata)
+      : proto_metadata_(metadata), typed_metadata_(proto_metadata_) {}
+  MetadataPack() : proto_metadata_(), typed_metadata_(proto_metadata_) {}
+
+  const envoy::config::core::v3::Metadata proto_metadata_;
+  const TypedMetadataImpl<FactoryClass> typed_metadata_;
+};
+
+template <class FactoryClass> using MetadataPackPtr = std::unique_ptr<MetadataPack<FactoryClass>>;
+template <class FactoryClass>
+using MetadataPackSharedPtr = std::shared_ptr<MetadataPack<FactoryClass>>;
 
 } // namespace Config
 } // namespace Envoy

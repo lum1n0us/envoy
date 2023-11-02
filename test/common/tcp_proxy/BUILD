@@ -26,7 +26,6 @@ envoy_cc_test_library(
         "//source/common/tcp_proxy",
         "//source/common/upstream:upstream_includes",
         "//source/common/upstream:upstream_lib",
-        "//source/extensions/access_loggers:well_known_names",
         "//source/extensions/access_loggers/file:config",
         "//source/extensions/upstreams/http/generic:config",
         "//test/common/upstream:utility_lib",
@@ -55,6 +54,7 @@ envoy_cc_test(
     ],
     deps = [
         ":tcp_proxy_test_base",
+        "//envoy/common:hashable_interface",
     ],
 )
 
@@ -79,7 +79,9 @@ envoy_cc_test(
     deps = [
         "//source/common/tcp_proxy",
         "//test/mocks/http:http_mocks",
+        "//test/mocks/server:factory_context_mocks",
         "//test/mocks/tcp:tcp_mocks",
         "//test/mocks/upstream:cluster_manager_mocks",
+        "//test/test_common:test_runtime_lib",
     ],
 )

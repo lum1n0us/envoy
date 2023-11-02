@@ -1,7 +1,10 @@
 #pragma once
 
+#include "source/common/stats/custom_stat_namespaces_impl.h"
+
 #include "test/extensions/filters/http/common/fuzz/http_filter_fuzzer.h"
 #include "test/fuzz/utility.h"
+#include "test/mocks/api/mocks.h"
 #include "test/mocks/buffer/mocks.h"
 #include "test/mocks/http/mocks.h"
 #include "test/mocks/server/factory_context.h"
@@ -45,6 +48,7 @@ private:
   envoy::config::core::v3::Metadata listener_metadata_;
   NiceMock<Envoy::StreamInfo::MockStreamInfo> stream_info_;
   TestScopedRuntime scoped_runtime_;
+  Stats::CustomStatNamespacesImpl custom_stat_namespaces_;
 
   // Filter constructed from the config.
   Http::StreamDecoderFilterSharedPtr decoder_filter_;
@@ -54,6 +58,12 @@ private:
   // Mocked callbacks.
   NiceMock<Http::MockStreamDecoderFilterCallbacks> decoder_callbacks_;
   NiceMock<Http::MockStreamEncoderFilterCallbacks> encoder_callbacks_;
+
+  Api::MockApi api_{};
+  Thread::ThreadFactory& thread_factory_;
+  Event::DispatcherPtr worker_thread_dispatcher_;
+
+  const Buffer::Instance* decoding_buffer_{};
 };
 
 } // namespace HttpFilters

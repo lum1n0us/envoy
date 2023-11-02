@@ -13,7 +13,8 @@ The gRPC bridge sandbox is an example usage of Envoy's
 This is an example of a key-value store where an ``http``-based client CLI, written in ``Python``,
 updates a remote store, written in ``Go``, using the stubs generated for both languages.
 
-The client send messages through a proxy that upgrades the HTTP requests from ``http/1.1`` to ``http/2``.
+The client send messages through a proxy that upgrades the HTTP requests from ``http/1.1`` to ``http/2`` or
+``http/3``
 
 ``[client](http/1.1) -> [client-egress-proxy](http/2) -> [server-ingress-proxy](http/2) -> [server]``
 
@@ -25,7 +26,7 @@ Step 1: Generate the protocol stubs
 
 Change to the ``examples/grpc-bridge`` directory.
 
-A docker-compose file is provided that generates the stubs for both ``client`` and ``server`` from the
+A docker compose file is provided that generates the stubs for both ``client`` and ``server`` from the
 specification in the ``protos`` directory.
 
 Inspecting the :download:`docker-compose-protos.yaml <_include/grpc-bridge/docker-compose-protos.yaml>` file,
@@ -38,7 +39,7 @@ Generate the stubs as follows:
 
   $ pwd
   envoy/examples/grpc-bridge
-  $ docker-compose -f docker-compose-protos.yaml up
+  $ docker compose -f docker-compose-protos.yaml up
   Starting grpc-bridge_stubs_python_1 ... done
   Starting grpc-bridge_stubs_go_1     ... done
   Attaching to grpc-bridge_stubs_go_1, grpc-bridge_stubs_python_1
@@ -73,9 +74,9 @@ To build this sandbox example and start the example services, run the following 
 
     $ pwd
     envoy/examples/grpc-bridge
-    $ docker-compose pull
-    $ docker-compose up --build -d
-    $ docker-compose ps
+    $ docker compose pull
+    $ docker compose up --build -d
+    $ docker compose ps
 
                    Name                             Command               State                  Ports
     ---------------------------------------------------------------------------------------------------------------
@@ -98,7 +99,7 @@ Set a key:
 
 .. code-block:: console
 
-  $ docker-compose exec grpc-client python /client/grpc-kv-client.py set foo bar
+  $ docker compose exec grpc-client python /client/grpc-kv-client.py set foo bar
   setf foo to bar
 
 
@@ -106,28 +107,28 @@ Get a key:
 
 .. code-block:: console
 
-  $ docker-compose exec grpc-client python /client/grpc-kv-client.py get foo
+  $ docker compose exec grpc-client python /client/grpc-kv-client.py get foo
   bar
 
 Modify an existing key:
 
 .. code-block:: console
 
-  $ docker-compose exec grpc-client python /client/grpc-kv-client.py set foo baz
+  $ docker compose exec grpc-client python /client/grpc-kv-client.py set foo baz
   setf foo to baz
 
 Get the modified key:
 
 .. code-block:: console
 
-  $ docker-compose exec grpc-client python /client/grpc-kv-client.py get foo
+  $ docker compose exec grpc-client python /client/grpc-kv-client.py get foo
   baz
 
-In the running docker-compose container, you should see the gRPC service printing a record of its activity:
+In the running docker compose container, you should see the gRPC service printing a record of its activity:
 
 .. code-block:: console
 
-  $ docker-compose logs grpc-server
+  $ docker compose logs grpc-server
   grpc_1    | 2017/05/30 12:05:09 set: foo = bar
   grpc_1    | 2017/05/30 12:05:12 get: foo
   grpc_1    | 2017/05/30 12:05:18 set: foo = baz

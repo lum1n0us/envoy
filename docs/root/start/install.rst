@@ -5,9 +5,6 @@ Installing Envoy
 
 The Envoy project :ref:`provides a number of pre-built Docker images <install_binaries>` for both ``amd64`` and ``arm64`` architectures.
 
-The `Get Envoy <https://www.getenvoy.io/>`__ project also maintains a number of binaries
-and repositories to accommodate many popular distributions.
-
 If you are :ref:`installing on Mac OSX <start_install_macosx>`, you can install natively with ``brew``.
 
 Once you have installed Envoy, check out the :ref:`quick start <start_quick_start>` guide for more information on
@@ -16,97 +13,58 @@ getting your Envoy proxy up and running.
 Install Envoy on Debian GNU/Linux
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-You can `install Envoy on Debian <https://www.getenvoy.io/install/envoy/debian/>`_
-using `Get Envoy <https://www.getenvoy.io/>`__.
+You can `install Envoy on Debian using packages created by Tetrate <https://cloudsmith.io/~tetrate/repos/getenvoy-deb-stable/setup/#formats-deb>`_
+until `official packages exist <https://github.com/envoyproxy/envoy/issues/16867>`_.
 
 .. code-block:: console
 
    $ sudo apt update
-   $ sudo apt install apt-transport-https ca-certificates curl gnupg2 software-properties-common
-   $ curl -sL 'https://getenvoy.io/gpg' | sudo apt-key add -
-   $ # verify the key
-   $ apt-key fingerprint 6FF974DB | grep "5270 CEAC"
-   $ sudo add-apt-repository "deb [arch=amd64] https://dl.bintray.com/tetrate/getenvoy-deb $(lsb_release -cs) stable"
+   $ sudo apt install debian-keyring debian-archive-keyring apt-transport-https curl lsb-release
+   $ curl -sL 'https://deb.dl.getenvoy.io/public/gpg.8115BA8E629CC074.key' | sudo gpg --dearmor -o /usr/share/keyrings/getenvoy-keyring.gpg
+   # Verify the keyring - this should yield "OK"
+   $ echo a077cb587a1b622e03aa4bf2f3689de14658a9497a9af2c427bba5f4cc3c4723 /usr/share/keyrings/getenvoy-keyring.gpg | sha256sum --check
+   $ echo "deb [arch=amd64 signed-by=/usr/share/keyrings/getenvoy-keyring.gpg] https://deb.dl.getenvoy.io/public/deb/debian $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/getenvoy.list
    $ sudo apt update
    $ sudo apt install getenvoy-envoy
-
-.. tip::
-
-   To add the nightly repository instead, replace the word ``stable`` with ``nightly``,
-   when adding the ``apt`` repository.
 
 Install Envoy on Ubuntu Linux
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-You can `install Envoy on Ubuntu <https://www.getenvoy.io/install/envoy/ubuntu/>`_
-using `Get Envoy <https://www.getenvoy.io/>`__.
+You can `install Envoy on Ubuntu using packages created by Tetrate <https://cloudsmith.io/~tetrate/repos/getenvoy-deb-stable/setup/#formats-deb>`_
+until `official packages exist <https://github.com/envoyproxy/envoy/issues/16867>`_.
 
 .. code-block:: console
 
    $ sudo apt update
-   $ sudo apt install apt-transport-https ca-certificates curl gnupg-agent software-properties-common
-   $ curl -sL 'https://getenvoy.io/gpg' | sudo apt-key add -
-   $ # verify the key
-   $ apt-key fingerprint 6FF974DB | grep "5270 CEAC"
-   $ sudo add-apt-repository "deb [arch=amd64] https://dl.bintray.com/tetrate/getenvoy-deb $(lsb_release -cs) stable"
+   $ sudo apt install apt-transport-https gnupg2 curl lsb-release
+   $ curl -sL 'https://deb.dl.getenvoy.io/public/gpg.8115BA8E629CC074.key' | sudo gpg --dearmor -o /usr/share/keyrings/getenvoy-keyring.gpg
+   # Verify the keyring - this should yield "OK"
+   $ echo a077cb587a1b622e03aa4bf2f3689de14658a9497a9af2c427bba5f4cc3c4723 /usr/share/keyrings/getenvoy-keyring.gpg | sha256sum --check
+   $ echo "deb [arch=amd64 signed-by=/usr/share/keyrings/getenvoy-keyring.gpg] https://deb.dl.getenvoy.io/public/deb/ubuntu $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/getenvoy.list
    $ sudo apt update
    $ sudo apt install -y getenvoy-envoy
 
-.. tip::
+Install Envoy on RPM-based distros
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   To add the nightly repository instead, replace the word ``stable`` with ``nightly``,
-   when adding the ``apt`` repository.
-
-Install Envoy on CentOS Linux
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-You can `install Envoy on CentOS <https://www.getenvoy.io/install/envoy/centos/>`_
-using `Get Envoy <https://www.getenvoy.io/>`__.
+You can install Envoy on Centos/Redhat Enterprise Linux (RHEL) using `packages created by Tetrate <https://cloudsmith.io/~tetrate/repos/getenvoy-rpm-stable/setup/#formats-rpm>`_
+until `official packages exist <https://github.com/envoyproxy/envoy/issues/16867>`_.
 
 .. code-block:: console
 
    $ sudo yum install yum-utils
-   $ sudo yum-config-manager --add-repo https://getenvoy.io/linux/centos/tetrate-getenvoy.repo
+   $ sudo rpm --import 'https://rpm.dl.getenvoy.io/public/gpg.CF716AF503183491.key'
+   $ curl -sL 'https://rpm.dl.getenvoy.io/public/config.rpm.txt?distro=el&codename=7' > /tmp/tetrate-getenvoy-rpm-stable.repo
+   $ sudo yum-config-manager --add-repo '/tmp/tetrate-getenvoy-rpm-stable.repo'
+   $ sudo yum makecache --disablerepo='*' --enablerepo='tetrate-getenvoy-rpm-stable'
    $ sudo yum install getenvoy-envoy
-
-.. tip::
-
-   You can enable/disable ``nightly`` using ``yum-config-manager``:
-
-   .. code-block:: console
-
-      $ sudo yum-config-manager --enable tetrate-getenvoy-nightly
-      $ sudo yum-config-manager --disable tetrate-getenvoy-nightly
-
-Install Envoy on Redhat Enterprise Linux (RHEL)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-You can
-`install Envoy on Redhat Enterprise Linux (RHEL) <https://www.getenvoy.io/install/envoy/rhel/>`_
-using `Get Envoy <https://www.getenvoy.io/>`__.
-
-.. code-block:: console
-
-   $ sudo yum install yum-utils
-   $ sudo yum-config-manager --add-repo https://getenvoy.io/linux/rhel/tetrate-getenvoy.repo
-   $ sudo yum install getenvoy-envoy
-
-.. tip::
-
-   You can enable/disable ``nightly`` using ``yum-config-manager``:
-
-   .. code-block:: console
-
-      $ sudo yum-config-manager --enable tetrate-getenvoy-nightly
-      $ sudo yum-config-manager --disable tetrate-getenvoy-nightly
 
 .. _start_install_macosx:
 
 Install Envoy on Mac OSX
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-You can install Envoy on Mac OSX using the official brew repositories, or from
-`Get Envoy <https://www.getenvoy.io/install/envoy/macos>`__.
+You can install Envoy on Mac OSX using the official brew repositories.
 
 .. tabs::
 
@@ -115,26 +73,24 @@ You can install Envoy on Mac OSX using the official brew repositories, or from
       $ brew update
       $ brew install envoy
 
-   .. tab:: Get Envoy
+.. _start_install_windows:
 
-      .. code-block:: console
+Install Envoy on Windows
+~~~~~~~~~~~~~~~~~~~~~~~~
 
-         $ brew tap tetratelabs/getenvoy
-         $ brew install envoy
+You can run Envoy using the official Windows Docker image.
 
-      .. tip::
+.. substitution-code-block:: console
 
-         You can install the ``nightly`` version from
-         `Get Envoy <https://www.getenvoy.io/>`__ by adding the ``--HEAD`` flag to
-         the install command.
+   $ docker pull envoyproxy/|envoy_windows_docker_image|
+   $ docker run --rm envoyproxy/|envoy_windows_docker_image| --version
 
 .. _start_install_docker:
 
 Install Envoy using Docker
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-You can run Envoy using the official Docker images, or by
-using images provided by `Get Envoy <https://www.getenvoy.io/install/envoy/docker/>`__.
+You can run Envoy using the official Docker images.
 
 The following commands will pull and show the Envoy version of current images.
 
@@ -147,95 +103,159 @@ The following commands will pull and show the Envoy version of current images.
          $ docker pull envoyproxy/|envoy_docker_image|
          $ docker run --rm envoyproxy/|envoy_docker_image| --version
 
-   .. tab:: Get Envoy
+   .. tab:: Envoy (distroless)
 
-      .. code-block:: console
+      .. substitution-code-block:: console
 
-         $ docker pull getenvoy/envoy:stable
-         $ docker run --rm getenvoy/envoy:stable --version
+         $ docker pull envoyproxy/|envoy_distroless_docker_image|
+         $ docker run --rm envoyproxy/|envoy_distroless_docker_image| --version
 
-      .. tip::
 
-         To use the ``nightly`` version from `Get Envoy <https://www.getenvoy.io/>`__
-         replace the word ``stable`` with ``nightly`` in the above commands.
+Supported tags
+^^^^^^^^^^^^^^
+
+For stable Envoy versions images are created for the version and the latest of that minor version.
+
+For example, if the latest version in the v1.73.x series is v1.73.7 then images are created for:
+
+- ``envoyproxy/envoy:v1.73.7``
+- ``envoyproxy/envoy:v1.73-latest``
+
+A similar strategy is used to create images for each of the versioned variants.
+
+Supported architectures
+^^^^^^^^^^^^^^^^^^^^^^^
+
+The Envoy project currently supports ``amd64`` and ``arm64`` architectures for its Linux build and images.
+
+.. _install_contrib:
+
+Contrib builds
+^^^^^^^^^^^^^^
+As described in `this document <https://docs.google.com/document/d/1yl7GOZK1TDm_7vxQvt8UQEAu07UQFru1uEKXM6ZZg_g/edit#>`_,
+the Envoy project allows extensions to enter the repository as "contrib" extensions. The requirements
+for such extensions are lower, and as such they are only available by default in special images.
+
+Throughout the documentation, extensions are clearly marked as being a contrib extension or a core extension.
+
+Image variants
+^^^^^^^^^^^^^^
+
+``envoyproxy/envoy:<version>``
+++++++++++++++++++++++++++++++
+
+These images contains just the core Envoy binary built upon an Ubuntu base image.
+
+``envoyproxy/envoy:distroless-<version>``
++++++++++++++++++++++++++++++++++++++++++
+
+These images contains just the core Envoy binary built upon a distroless (nonroot/nossl) base image.
+
+These images are the most efficient and secure way to deploy Envoy in a container.
+
+``envoyproxy/envoy:contrib-<version>``
+++++++++++++++++++++++++++++++++++++++
+
+These images contain the Envoy binary built with all contrib extensions on top of an Ubuntu base.
+
+``envoyproxy/envoy:tools-<version>``
+++++++++++++++++++++++++++++++++++++
+
+These images contain tools that are separate from the proxy binary but are useful in supporting systems such as CI, configuration generation pipelines, etc
+
+``envoyproxy/envoy:dev`` / ``envoyproxy/envoy:dev-<SHA>`` / ``envoyproxy/envoy:<variant>-dev`` / ``envoyproxy/envoy:<variant>-dev-<SHA>``
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+The Envoy project considers the ``main`` branch to be release candidate quality at all times, and many organizations track and deploy ``main`` in production.
+
+We encourage you to do the same so that issues can be reported and resolved as quickly as possible.
+
+
+``envoyproxy/envoy:debug-<version>`` / ``envoyproxy/envoy:<variant>-debug-<version>``
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+These images are built for each of the variants, but with an Envoy binary containing debug symbols.
 
 .. _install_binaries:
 
 Pre-built Envoy Docker images
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The following table shows the available Docker images
+`envoyproxy/envoy <https://hub.docker.com/r/envoyproxy/envoy>`__
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+The following table shows the available Docker tag variants for the latest
+`envoyproxy/envoy <https://hub.docker.com/r/envoyproxy/envoy>`__ images.
 
 .. list-table::
    :widths: auto
-   :header-rows: 2
+   :header-rows: 1
    :stub-columns: 1
 
-   * -
-     -
-     - stable
-     - stable
-     - main
-     - main
-   * - Docker image
-     - Description
-     - amd64
-     - arm64
-     - amd64
-     - arm64
-   * - `envoyproxy/envoy <https://hub.docker.com/r/envoyproxy/envoy/tags/>`_
-     - Release binary with symbols stripped on top of an Ubuntu Bionic base.
-     - |DOCKER_IMAGE_TAG_NAME|
-     - |DOCKER_IMAGE_TAG_NAME|
-     -
-     -
-   * - `envoyproxy/envoy-alpine <https://hub.docker.com/r/envoyproxy/envoy-alpine/tags/>`_
-     - Release binary with symbols stripped on top of a **glibc** alpine base.
-     - |DOCKER_IMAGE_TAG_NAME|
-     -
-     -
-     -
-   * - `envoyproxy/envoy-debug <https://hub.docker.com/r/envoyproxy/envoy-debug/tags/>`_
-     - Release binary with debug symbols on top of an Ubuntu Bionic base.
-     - |DOCKER_IMAGE_TAG_NAME|
-     - |DOCKER_IMAGE_TAG_NAME|
-     -
-     -
-   * - `envoyproxy/envoy-dev <https://hub.docker.com/r/envoyproxy/envoy-dev/tags/>`_
-     - Release binary with symbols stripped on top of an Ubuntu Bionic base.
-     -
-     -
-     - latest
-     - latest
-   * - `envoyproxy/envoy-alpine-dev <https://hub.docker.com/r/envoyproxy/envoy-alpine-dev/tags/>`_
-     - Release binary with symbols stripped on top of a **glibc** alpine base.
-     -
-     -
-     - latest
-     -
-   * - `envoyproxy/envoy-debug-dev <https://hub.docker.com/r/envoyproxy/envoy-debug-dev/tags/>`_
-     - Release binary with debug symbols on top of an Ubuntu Bionic base.
-     -
-     -
-     - latest
-     - latest
-   * - `envoyproxy/envoy-build-ubuntu <https://hub.docker.com/r/envoyproxy/envoy-build-ubuntu/tags/>`_
-     - Build image which includes tools for building multi-arch Envoy and containers.
-     -
-     -
-     - See Docker Hub
-     - See Docker Hub
+   * - variant
+     - latest stable (amd64/arm64)
+     - main dev (amd64/arm64)
+   * - envoy (default)
+     - :dockerhub_envoy:`envoy`
+     - :dockerhub_envoy:`envoy-dev`
+   * - contrib
+     - :dockerhub_envoy:`contrib`
+     - :dockerhub_envoy:`contrib-dev`
+   * - distroless
+     - :dockerhub_envoy:`distroless`
+     - :dockerhub_envoy:`distroless-dev`
+   * - debug
+     - :dockerhub_envoy:`debug`
+     - :dockerhub_envoy:`debug-dev`
+   * - contrib-debug
+     - :dockerhub_envoy:`contrib-debug`
+     - :dockerhub_envoy:`contrib-debug-dev`
+   * - tools
+     - :dockerhub_envoy:`tools`
+     - :dockerhub_envoy:`tools-dev`
+
+
+`envoyproxy/envoy-windows <https://hub.docker.com/r/envoyproxy/envoy-windows>`__, `envoyproxy/envoy-windows-dev <https://hub.docker.com/r/envoyproxy/envoy-windows-dev>`__
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+Release binary with symbols stripped on top of a Windows Server 1809 base.
+
+The ``windows-dev`` image also contains build tools.
+
+.. list-table::
+   :widths: auto
+   :header-rows: 1
+   :stub-columns: 1
+
+   * - variant
+     - latest stable (amd64)
+     - main dev (amd64)
+   * - envoy-windows
+     - :dockerhub_envoy:`windows`
+     - :dockerhub_envoy:`windows-dev`
+
+.. _install_tools:
+
+`envoyproxy/envoy-build-ubuntu <https://hub.docker.com/r/envoyproxy/envoy-build-ubuntu>`__
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+Build images are always versioned using their commit SHA, which is in turn committed to the Envoy repository
+to ensure reproducible builds.
+
+.. list-table::
+   :widths: auto
+   :header-rows: 1
+   :stub-columns: 1
+
+   * - variant
+     - latest (amd64/arm64)
+   * - envoy-build-ubuntu (default)
+     - :dockerhub_envoy:`build-ubuntu`
+   * - envoy-build-ubuntu:mobile
+     - :dockerhub_envoy:`build-ubuntu-mobile`
 
 .. note::
-
-   In the above repositories, we tag a *vX.Y-latest* image for each security/stable release line.
-
-   In the above *dev* repositories, the *latest* tag points to a container including the last
-   Envoy build on main that passed tests.
-
-   The Envoy project considers main to be release candidate quality at all times, and many
-   organizations track and deploy main in production. We encourage you to do the same so that
-   issues can be reported as early as possible in the development process.
-
    The ``envoy-build-ubuntu`` image does not contain a working Envoy server, but can be used for
-   building Envoy and related containers. This image requires 4-5GB of available disk space to use.
+   building Envoy and related containers.
+
+   This image requires 4-5GB of available disk space to use.

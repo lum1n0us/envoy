@@ -14,8 +14,10 @@ envoy_cc_library(
     hdrs = ["evaluator.h"],
     deps = [
         ":context_lib",
+        "//envoy/singleton:manager_interface",
         "//source/common/http:utility_lib",
         "//source/common/protobuf",
+        "@com_google_cel_cpp//eval/public:activation",
         "@com_google_cel_cpp//eval/public:builtin_func_registrar",
         "@com_google_cel_cpp//eval/public:cel_expr_builder_factory",
         "@com_google_cel_cpp//eval/public:cel_expression",
@@ -32,9 +34,11 @@ envoy_cc_library(
         "//source/common/grpc:common_lib",
         "//source/common/http:header_map_lib",
         "//source/common/http:utility_lib",
+        "//source/common/singleton:const_singleton",
         "//source/common/stream_info:utility_lib",
         "@com_google_cel_cpp//eval/public:cel_value",
         "@com_google_cel_cpp//eval/public:cel_value_producer",
+        "@com_google_cel_cpp//eval/public/containers:container_backed_list_impl",
         "@com_google_cel_cpp//eval/public/structs:cel_proto_wrapper",
         "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
     ],
@@ -48,9 +52,8 @@ envoy_cc_library(
     hdrs = [
         "cel_state.h",
     ],
-    visibility = ["//visibility:public"],
     deps = [
-        "//include/envoy/stream_info:filter_state_interface",
+        "//envoy/stream_info:filter_state_interface",
         "//source/common/protobuf",
         "//source/common/singleton:const_singleton",
         "@com_github_google_flatbuffers//:flatbuffers",

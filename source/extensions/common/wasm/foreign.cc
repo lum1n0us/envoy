@@ -1,8 +1,7 @@
-#include "common/common/logger.h"
-
+#include "source/common/common/logger.h"
 #include "source/extensions/common/wasm/ext/declare_property.pb.h"
-
-#include "extensions/common/wasm/wasm.h"
+#include "source/extensions/common/wasm/ext/set_envoy_filter_state.pb.h"
+#include "source/extensions/common/wasm/wasm.h"
 
 #if defined(WASM_USE_CEL_PARSER)
 #include "eval/public/builtin_func_registrar.h"
@@ -26,9 +25,23 @@ template <typename T> WasmForeignFunction createFromClass() {
   return c->create(c);
 }
 
+inline StreamInfo::FilterState::LifeSpan
+toFilterStateLifeSpan(envoy::source::extensions::common::wasm::LifeSpan span) {
+  switch (span) {
+  case envoy::source::extensions::common::wasm::LifeSpan::FilterChain:
+    return StreamInfo::FilterState::LifeSpan::FilterChain;
+  case envoy::source::extensions::common::wasm::LifeSpan::DownstreamRequest:
+    return StreamInfo::FilterState::LifeSpan::Request;
+  case envoy::source::extensions::common::wasm::LifeSpan::DownstreamConnection:
+    return StreamInfo::FilterState::LifeSpan::Connection;
+  default:
+    return StreamInfo::FilterState::LifeSpan::FilterChain;
+  }
+}
+
 RegisterForeignFunction registerCompressForeignFunction(
     "compress",
-    [](WasmBase&, absl::string_view arguments,
+    [](WasmBase&, std::string_view arguments,
        const std::function<void*(size_t size)>& alloc_result) -> WasmResult {
       unsigned long dest_len = compressBound(arguments.size());
       std::unique_ptr<unsigned char[]> b(new unsigned char[dest_len]);
@@ -43,7 +56,7 @@ RegisterForeignFunction registerCompressForeignFunction(
 
 RegisterForeignFunction registerUncompressForeignFunction(
     "uncompress",
-    [](WasmBase&, absl::string_view arguments,
+    [](WasmBase&, std::string_view arguments,
        const std::function<void*(size_t size)>& alloc_result) -> WasmResult {
       unsigned long dest_len = arguments.size() * 2 + 2; // output estimate.
       while (true) {
@@ -61,6 +74,19 @@ RegisterForeignFunction registerUncompressForeignFunction(
         }
         dest_len = dest_len * 2;
       }
+    });
+
+RegisterForeignFunction registerSetEnvoyFilterStateForeignFunction(
+    "set_envoy_filter_state",
+    [](WasmBase&, std::string_view arguments,
+       const std::function<void*(size_t size)>&) -> WasmResult {
+      envoy::source::extensions::common::wasm::SetEnvoyFilterStateArguments args;
+      if (args.ParseFromArray(arguments.data(), arguments.size())) {
+        auto context = static_cast<Context*>(proxy_wasm::current_context_);
+        return context->setEnvoyFilterState(args.path(), args.value(),
+                                            toFilterStateLifeSpan(args.span()));
+      }
+      return WasmResult::BadArgument;
     });
 
 #if defined(WASM_USE_CEL_PARSER)
@@ -120,7 +146,7 @@ class CreateExpressionFactory : public ExpressionFactory {
 public:
   WasmForeignFunction create(std::shared_ptr<CreateExpressionFactory> self) const {
     WasmForeignFunction f =
-        [self](WasmBase&, absl::string_view expr,
+        [self](WasmBase&, std::string_view expr,
                const std::function<void*(size_t size)>& alloc_result) -> WasmResult {
       auto parse_status = google::api::expr::parser::Parse(std::string(expr));
       if (!parse_status.ok()) {
@@ -157,7 +183,7 @@ class EvaluateExpressionFactory : public ExpressionFactory {
 public:
   WasmForeignFunction create(std::shared_ptr<EvaluateExpressionFactory> self) const {
     WasmForeignFunction f =
-        [self](WasmBase&, absl::string_view argument,
+        [self](WasmBase&, std::string_view argument,
                const std::function<void*(size_t size)>& alloc_result) -> WasmResult {
       auto& expr_context = getOrCreateContext(proxy_wasm::current_context_->root_context());
       if (argument.size() != sizeof(uint32_t)) {
@@ -199,7 +225,7 @@ RegisterForeignFunction
 class DeleteExpressionFactory : public ExpressionFactory {
 public:
   WasmForeignFunction create(std::shared_ptr<DeleteExpressionFactory> self) const {
-    WasmForeignFunction f = [self](WasmBase&, absl::string_view argument,
+    WasmForeignFunction f = [self](WasmBase&, std::string_view argument,
                                    const std::function<void*(size_t size)>&) -> WasmResult {
       auto& expr_context = getOrCreateContext(proxy_wasm::current_context_->root_context());
       if (argument.size() != sizeof(uint32_t)) {
@@ -222,7 +248,7 @@ RegisterForeignFunction
 class DeclarePropertyFactory {
 public:
   WasmForeignFunction create(std::shared_ptr<DeclarePropertyFactory> self) const {
-    WasmForeignFunction f = [self](WasmBase&, absl::string_view arguments,
+    WasmForeignFunction f = [self](WasmBase&, std::string_view arguments,
                                    const std::function<void*(size_t size)>&) -> WasmResult {
       envoy::source::extensions::common::wasm::DeclarePropertyArguments args;
       if (args.ParseFromArray(arguments.data(), arguments.size())) {
@@ -244,21 +270,7 @@ public:
           // do nothing
           break;
         }
-        StreamInfo::FilterState::LifeSpan span = StreamInfo::FilterState::LifeSpan::FilterChain;
-        switch (args.span()) {
-        case envoy::source::extensions::common::wasm::LifeSpan::FilterChain:
-          span = StreamInfo::FilterState::LifeSpan::FilterChain;
-          break;
-        case envoy::source::extensions::common::wasm::LifeSpan::DownstreamRequest:
-          span = StreamInfo::FilterState::LifeSpan::Request;
-          break;
-        case envoy::source::extensions::common::wasm::LifeSpan::DownstreamConnection:
-          span = StreamInfo::FilterState::LifeSpan::Connection;
-          break;
-        default:
-          // do nothing
-          break;
-        }
+        StreamInfo::FilterState::LifeSpan span = toFilterStateLifeSpan(args.span());
         auto context = static_cast<Context*>(proxy_wasm::current_context_);
         return context->declareProperty(
             args.name(), std::make_unique<const Filters::Common::Expr::CelStatePrototype>(

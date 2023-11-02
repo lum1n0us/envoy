@@ -1,13 +1,12 @@
 #include <memory>
 #include <string>
 
-#include "envoy/extensions/filters/http/oauth2/v3alpha/oauth.pb.h"
+#include "envoy/extensions/filters/http/oauth2/v3/oauth.pb.h"
 
-#include "common/protobuf/message_validator_impl.h"
-#include "common/protobuf/utility.h"
-#include "common/secret/secret_provider_impl.h"
-
-#include "extensions/filters/http/oauth2/config.h"
+#include "source/common/protobuf/message_validator_impl.h"
+#include "source/common/protobuf/utility.h"
+#include "source/common/secret/secret_provider_impl.h"
+#include "source/extensions/filters/http/oauth2/config.h"
 
 #include "test/mocks/server/factory_context.h"
 
@@ -40,7 +39,7 @@ config:
     hmac_secret:
       name: hmac
   authorization_endpoint: https://oauth.com/oauth/authorize/
-  redirect_uri: "%REQ(:x-forwarded-proto)%://%REQ(:authority)%/callback"
+  redirect_uri: "%REQ(x-forwarded-proto)%://%REQ(:authority)%/callback"
   redirect_path_matcher:
     path:
       exact: /callback
@@ -55,6 +54,7 @@ config:
   - oauth2-resource
   - http://example.com
   - https://example.com
+  auth_type: "BASIC_AUTH"
     )EOF";
 
   OAuth2Config factory;
@@ -87,8 +87,14 @@ config:
       name: token
     hmac_secret:
       name: hmac
+    cookie_names:
+      bearer_token: BearerToken
+      oauth_hmac: OauthHMAC
+      oauth_expires: OauthExpires
+      id_token: IdToken
+      refresh_token: RefreshToken
   authorization_endpoint: https://oauth.com/oauth/authorize/
-  redirect_uri: "%REQ(:x-forwarded-proto)%://%REQ(:authority)%/callback"
+  redirect_uri: "%REQ(x-forwarded-proto)%://%REQ(:authority)%/callback"
   redirect_path_matcher:
     path:
       exact: /callback
@@ -122,10 +128,11 @@ config:
   EXPECT_CALL(context, scope());
   EXPECT_CALL(context, timeSource());
   EXPECT_CALL(context, api());
+  EXPECT_CALL(context, initManager()).Times(2);
   EXPECT_CALL(context, getTransportSocketFactoryContext());
   Http::FilterFactoryCb cb = factory.createFilterFactoryFromProto(*proto_config, "stats", context);
   Http::MockFilterChainFactoryCallbacks filter_callback;
-  EXPECT_CALL(filter_callback, addStreamDecoderFilter(_));
+  EXPECT_CALL(filter_callback, addStreamFilter(_));
   cb(filter_callback);
 }
 
@@ -140,12 +147,54 @@ TEST(ConfigTest, InvalidHmacSecret) {
 TEST(ConfigTest, CreateFilterMissingConfig) {
   OAuth2Config config;
 
-  envoy::extensions::filters::http::oauth2::v3alpha::OAuth2 proto_config;
+  envoy::extensions::filters::http::oauth2::v3::OAuth2 proto_config;
 
   NiceMock<Server::Configuration::MockFactoryContext> factory_context;
   EXPECT_THROW_WITH_MESSAGE(
       config.createFilterFactoryFromProtoTyped(proto_config, "whatever", factory_context),
       EnvoyException, "config must be present for global config");
+}
+
+TEST(ConfigTest, WrongCookieName) {
+  const std::string yaml = R"EOF(
+config:
+  token_endpoint:
+    cluster: foo
+    uri: oauth.com/token
+    timeout: 3s
+  credentials:
+    client_id: "secret"
+    token_secret:
+      name: token
+    hmac_secret:
+      name: hmac
+    cookie_names:
+      bearer_token: "?"
+  authorization_endpoint: https://oauth.com/oauth/authorize/
+  redirect_uri: "%REQ(x-forwarded-proto)%://%REQ(:authority)%/callback"
+  redirect_path_matcher:
+    path:
+      exact: /callback
+  signout_path:
+    path:
+      exact: /signout
+  auth_scopes:
+  - user
+  - openid
+  - email
+  resources:
+  - oauth2-resource
+  - http://example.com
+  - https://example.com
+    )EOF";
+
+  OAuth2Config factory;
+  ProtobufTypes::MessagePtr proto_config = factory.createEmptyConfigProto();
+  TestUtility::loadFromYaml(yaml, *proto_config);
+  NiceMock<Server::Configuration::MockFactoryContext> context;
+
+  EXPECT_THROW_WITH_REGEX(factory.createFilterFactoryFromProto(*proto_config, "stats", context),
+                          EnvoyException, "value does not match regex pattern");
 }
 
 } // namespace Oauth2

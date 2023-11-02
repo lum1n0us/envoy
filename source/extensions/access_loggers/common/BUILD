@@ -15,10 +15,20 @@ envoy_cc_library(
     srcs = ["access_log_base.cc"],
     hdrs = ["access_log_base.h"],
     deps = [
-        "//include/envoy/access_log:access_log_interface",
+        "//envoy/access_log:access_log_interface",
         "//source/common/access_log:access_log_lib",
         "//source/common/http:header_map_lib",
         "//source/common/singleton:const_singleton",
+    ],
+)
+
+envoy_cc_library(
+    name = "grpc_access_logger_utils_lib",
+    srcs = ["grpc_access_logger_utils.cc"],
+    hdrs = ["grpc_access_logger_utils.h"],
+    deps = [
+        "//envoy/common:optref_lib",
+        "@envoy_api//envoy/extensions/access_loggers/grpc/v3:pkg_cc_proto",
     ],
 )
 
@@ -49,11 +59,12 @@ envoy_cc_library(
     name = "grpc_access_logger",
     hdrs = ["grpc_access_logger.h"],
     deps = [
-        "//include/envoy/event:dispatcher_interface",
-        "//include/envoy/grpc:async_client_manager_interface",
-        "//include/envoy/singleton:instance_interface",
-        "//include/envoy/stats:stats_interface",
-        "//include/envoy/thread_local:thread_local_interface",
+        ":grpc_access_logger_utils_lib",
+        "//envoy/event:dispatcher_interface",
+        "//envoy/grpc:async_client_manager_interface",
+        "//envoy/singleton:instance_interface",
+        "//envoy/stats:stats_interface",
+        "//envoy/thread_local:thread_local_interface",
         "//source/common/common:assert_lib",
         "//source/common/grpc:typed_async_client_lib",
         "//source/common/protobuf:utility_lib",

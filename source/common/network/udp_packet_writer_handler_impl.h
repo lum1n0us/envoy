@@ -4,7 +4,7 @@
 #include "envoy/network/socket.h"
 #include "envoy/network/udp_packet_writer_handler.h"
 
-#include "common/network/io_socket_error_impl.h"
+#include "source/common/network/io_socket_error_impl.h"
 
 namespace Envoy {
 namespace Network {
@@ -31,13 +31,12 @@ public:
     return {nullptr, 0, nullptr};
   }
   Api::IoCallUint64Result flush() override {
-    return Api::IoCallUint64Result(
-        /*rc=*/0,
-        /*err=*/Api::IoErrorPtr(nullptr, Network::IoSocketError::deleteIoError));
+    return {/*rc=*/0,
+            /*err=*/Api::IoError::none()};
   }
 
 private:
-  bool write_blocked_;
+  bool write_blocked_{false};
   Network::IoHandle& io_handle_;
 };
 

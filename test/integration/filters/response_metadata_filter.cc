@@ -4,14 +4,14 @@
 #include "envoy/registry/registry.h"
 #include "envoy/server/filter_config.h"
 
-#include "extensions/filters/http/common/pass_through_filter.h"
+#include "source/extensions/filters/http/common/pass_through_filter.h"
 
 #include "test/extensions/filters/http/common/empty_http_filter_config.h"
 
 namespace Envoy {
 
 // A filter tests response metadata process. The filter inserts new
-// metadata when encodeHeaders/Data/Trailers/100ContinueHeaders/Metadata() are called, and consumes
+// metadata when encodeHeaders/Data/Trailers/1xxHeaders/Metadata() are called, and consumes
 // metadata in encodeMetadata().
 class ResponseMetadataStreamFilter : public Http::PassThroughFilter {
 public:
@@ -43,14 +43,14 @@ public:
   }
 
   // Inserts two metadata_maps by calling decoder_callbacks_->encodeMetadata() twice.
-  Http::FilterHeadersStatus encode100ContinueHeaders(Http::ResponseHeaderMap&) override {
+  Http::Filter1xxHeadersStatus encode1xxHeaders(Http::ResponseHeaderMap&) override {
     Http::MetadataMap metadata_map = {{"100-continue", "100-continue"}, {"duplicate", "duplicate"}};
     Http::MetadataMapPtr metadata_map_ptr = std::make_unique<Http::MetadataMap>(metadata_map);
     encoder_callbacks_->addEncodedMetadata(std::move(metadata_map_ptr));
     metadata_map = {{"duplicate", "duplicate"}};
     metadata_map_ptr = std::make_unique<Http::MetadataMap>(metadata_map);
     encoder_callbacks_->addEncodedMetadata(std::move(metadata_map_ptr));
-    return Http::FilterHeadersStatus::Continue;
+    return Http::Filter1xxHeadersStatus::Continue;
   }
 
   // Adds new metadata to metadata_map directly, and consumes metadata when the keys are equal to

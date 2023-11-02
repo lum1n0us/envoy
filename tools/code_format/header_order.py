@@ -13,7 +13,6 @@
 # canonical paths.
 
 import argparse
-import common
 import pathlib
 import re
 import sys
@@ -56,7 +55,7 @@ def reorder_headers(path):
 
     # Filter for includes that finds the #include of the header file associated with the source file
     # being processed. E.g. if 'path' is source/common/common/hex.cc, this filter matches
-    # "common/common/hex.h".
+    # "source/common/common/hex.h".
     def file_header_filter():
         return lambda f: f.endswith('.h"') and path.endswith(f[1:-3] + '.cc')
 
@@ -110,7 +109,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--include_dir_order',
         type=str,
-        default=','.join(common.include_dir_order()),
+        default='',
         help='specify the header block include directory order')
     args = parser.parse_args()
     target_path = args.path

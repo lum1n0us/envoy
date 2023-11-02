@@ -1,15 +1,13 @@
-#include "extensions/filters/http/header_to_metadata/header_to_metadata_filter.h"
+#include "source/extensions/filters/http/header_to_metadata/header_to_metadata_filter.h"
 
 #include "envoy/extensions/filters/http/header_to_metadata/v3/header_to_metadata.pb.h"
 
-#include "common/common/base64.h"
-#include "common/common/regex.h"
-#include "common/config/well_known_names.h"
-#include "common/http/header_utility.h"
-#include "common/http/utility.h"
-#include "common/protobuf/protobuf.h"
-
-#include "extensions/filters/http/well_known_names.h"
+#include "source/common/common/base64.h"
+#include "source/common/common/regex.h"
+#include "source/common/config/well_known_names.h"
+#include "source/common/http/header_utility.h"
+#include "source/common/http/utility.h"
+#include "source/common/protobuf/protobuf.h"
 
 #include "absl/strings/numbers.h"
 #include "absl/strings/string_view.h"
@@ -37,7 +35,7 @@ absl::optional<std::string> HeaderValueSelector::extract(Http::HeaderMap& map) c
 absl::optional<std::string> CookieValueSelector::extract(Http::HeaderMap& map) const {
   std::string value = Envoy::Http::Utility::parseCookieValue(map, cookie_);
   if (!value.empty()) {
-    return absl::optional<std::string>(std::move(value));
+    return {std::move(value)};
   }
   return absl::nullopt;
 }
@@ -152,7 +150,7 @@ void HeaderToMetadataFilter::setEncoderFilterCallbacks(
   encoder_callbacks_ = &callbacks;
 }
 
-bool HeaderToMetadataFilter::addMetadata(StructMap& map, const std::string& meta_namespace,
+bool HeaderToMetadataFilter::addMetadata(StructMap& struct_map, const std::string& meta_namespace,
                                          const std::string& key, std::string value, ValueType type,
                                          ValueEncode encode) const {
   ProtobufWkt::Value val;
@@ -175,6 +173,7 @@ bool HeaderToMetadataFilter::addMetadata(StructMap& map, const std::string& meta
 
   // Sane enough, add the key/value.
   switch (type) {
+    PANIC_ON_PROTO_ENUM_SENTINEL_VALUES;
   case envoy::extensions::filters::http::header_to_metadata::v3::Config::STRING:
     val.set_string_value(std::move(value));
     break;
@@ -195,25 +194,17 @@ bool HeaderToMetadataFilter::addMetadata(StructMap& map, const std::string& meta
     }
     break;
   }
-  default:
-    NOT_REACHED_GCOVR_EXCL_LINE;
   }
 
-  // Have we seen this namespace before?
-  auto namespace_iter = map.find(meta_namespace);
-  if (namespace_iter == map.end()) {
-    map[meta_namespace] = ProtobufWkt::Struct();
-    namespace_iter = map.find(meta_namespace);
-  }
-
-  auto& keyval = namespace_iter->second;
-  (*keyval.mutable_fields())[key] = val;
+  auto& keyval = struct_map[meta_namespace];
+  (*keyval.mutable_fields())[key] = std::move(val);
 
   return true;
 }
 
 const std::string& HeaderToMetadataFilter::decideNamespace(const std::string& nspace) const {
-  return nspace.empty() ? HttpFilterNames::get().HeaderToMetadata : nspace;
+  static const std::string& headerToMetadata = "envoy.filters.http.header_to_metadata";
+  return nspace.empty() ? headerToMetadata : nspace;
 }
 
 // add metadata['key']= value depending on header present or missing case
@@ -267,8 +258,7 @@ const Config* HeaderToMetadataFilter::getConfig() const {
     return effective_config_;
   }
 
-  effective_config_ = Http::Utility::resolveMostSpecificPerFilterConfig<Config>(
-      HttpFilterNames::get().HeaderToMetadata, decoder_callbacks_->route());
+  effective_config_ = Http::Utility::resolveMostSpecificPerFilterConfig<Config>(decoder_callbacks_);
   if (effective_config_) {
     return effective_config_;
   }

@@ -2,26 +2,26 @@
 
 #include "envoy/matcher/matcher.h"
 
-#include "common/common/matchers.h"
+#include "source/common/common/matchers.h"
 
 namespace Envoy {
 namespace Matcher {
 
-class StringInputMatcher : public InputMatcher {
+template <class StringMatcherType>
+class StringInputMatcher : public InputMatcher, Logger::Loggable<Logger::Id::matcher> {
 public:
-  explicit StringInputMatcher(const envoy::type::matcher::v3::StringMatcher& matcher)
-      : matcher_(matcher) {}
+  explicit StringInputMatcher(const StringMatcherType& matcher) : matcher_(matcher) {}
 
-  bool match(absl::optional<absl::string_view> input) override {
-    if (!input) {
-      return false;
+  bool match(const MatchingDataType& input) override {
+    if (absl::holds_alternative<std::string>(input)) {
+      return matcher_.match(absl::get<std::string>(input));
     }
-
-    return matcher_.match(*input);
+    // Return false when input is empty.(i.e., input is absl::monostate).
+    return false;
   }
 
 private:
-  const Matchers::StringMatcherImpl matcher_;
+  const Matchers::StringMatcherImpl<StringMatcherType> matcher_;
 };
 
 } // namespace Matcher

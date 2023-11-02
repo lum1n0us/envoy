@@ -4,8 +4,8 @@
 #include "envoy/extensions/filters/network/redis_proxy/v3/redis_proxy.pb.h"
 #include "envoy/extensions/filters/network/redis_proxy/v3/redis_proxy.pb.validate.h"
 
-#include "extensions/health_checkers/redis/redis.h"
-#include "extensions/health_checkers/redis/utility.h"
+#include "source/extensions/health_checkers/redis/redis.h"
+#include "source/extensions/health_checkers/redis/utility.h"
 
 #include "test/common/upstream/utility.h"
 #include "test/extensions/filters/network/common/redis/mocks.h"
@@ -18,7 +18,6 @@
 #include "test/mocks/upstream/host.h"
 #include "test/mocks/upstream/host_set.h"
 #include "test/mocks/upstream/priority_set.h"
-#include "test/test_common/test_runtime.h"
 
 using testing::_;
 using testing::DoAll;
@@ -79,7 +78,7 @@ public:
         "@type": type.googleapis.com/envoy.extensions.health_checkers.redis.v3.Redis
     )EOF";
 
-    const auto& health_check_config = Upstream::parseHealthCheckFromV2Yaml(yaml);
+    const auto& health_check_config = Upstream::parseHealthCheckFromV3Yaml(yaml);
     const auto& redis_config = getRedisHealthCheckConfig(
         health_check_config, ProtobufMessage::getStrictValidationVisitor());
 
@@ -131,7 +130,7 @@ public:
     interval: 1s
     no_traffic_interval: 5s
     interval_jitter: 1s
-    unhealthy_threshold: 1
+    unhealthy_threshold: 2
     healthy_threshold: 1
     custom_health_check:
       name: redis
@@ -164,7 +163,7 @@ public:
         key: foo
     )EOF";
 
-    const auto& health_check_config = Upstream::parseHealthCheckFromV2Yaml(yaml);
+    const auto& health_check_config = Upstream::parseHealthCheckFromV3Yaml(yaml);
     const auto& redis_config = getRedisHealthCheckConfig(
         health_check_config, ProtobufMessage::getStrictValidationVisitor());
 
@@ -180,29 +179,6 @@ public:
         proto_config);
 
     EXPECT_CALL(*cluster_->info_, extensionProtocolOptions(_)).WillRepeatedly(Return(options));
-
-    health_checker_ = std::make_shared<RedisHealthChecker>(
-        *cluster_, health_check_config, redis_config, dispatcher_, runtime_,
-        Upstream::HealthCheckEventLoggerPtr(event_logger_), *api_, *this);
-  }
-
-  void setupExistsHealthcheckDeprecated(bool avoid_boosting = true) {
-    const std::string yaml = R"EOF(
-    timeout: 1s
-    interval: 1s
-    no_traffic_interval: 5s
-    interval_jitter: 1s
-    unhealthy_threshold: 1
-    healthy_threshold: 1
-    custom_health_check:
-      name: envoy.health_checkers.redis
-      config:
-        key: foo
-    )EOF";
-
-    const auto& health_check_config = Upstream::parseHealthCheckFromV3Yaml(yaml, avoid_boosting);
-    const auto& redis_config = getRedisHealthCheckConfig(
-        health_check_config, ProtobufMessage::getStrictValidationVisitor());
 
     health_checker_ = std::make_shared<RedisHealthChecker>(
         *cluster_, health_check_config, redis_config, dispatcher_, runtime_,
@@ -237,7 +213,7 @@ public:
   create(Upstream::HostConstSharedPtr, Event::Dispatcher&,
          const Extensions::NetworkFilters::Common::Redis::Client::Config&,
          const Extensions::NetworkFilters::Common::Redis::RedisCommandStatsSharedPtr&,
-         Stats::Scope&, const std::string& username, const std::string& password) override {
+         Stats::Scope&, const std::string& username, const std::string& password, bool) override {
     EXPECT_EQ(auth_username_, username);
     EXPECT_EQ(auth_password_, password);
     return Extensions::NetworkFilters::Common::Redis::Client::ClientPtr{create_()};
@@ -575,59 +551,6 @@ TEST_F(RedisHealthCheckerTest, LogInitialFailure) {
   EXPECT_EQ(1UL, cluster_->info_->stats_store_.counter("health_check.network_failure").value());
 }
 
-TEST_F(RedisHealthCheckerTest, DEPRECATED_FEATURE_TEST(ExistsDeprecated)) {
-  TestDeprecatedV2Api _deprecated_v2_api;
-  InSequence s;
-  setupExistsHealthcheckDeprecated(false);
-
-  cluster_->prioritySet().getMockHostSet(0)->hosts_ = {
-      Upstream::makeTestHost(cluster_->info_, "tcp://127.0.0.1:80", simTime())};
-
-  expectSessionCreate();
-  expectClientCreate();
-  expectExistsRequestCreate();
-  health_checker_->start();
-
-  client_->runHighWatermarkCallbacks();
-  client_->runLowWatermarkCallbacks();
-
-  // Success
-  EXPECT_CALL(*timeout_timer_, disableTimer());
-  EXPECT_CALL(*interval_timer_, enableTimer(_, _));
-  NetworkFilters::Common::Redis::RespValuePtr response(
-      new NetworkFilters::Common::Redis::RespValue());
-  response->type(NetworkFilters::Common::Redis::RespType::Integer);
-  response->asInteger() = 0;
-  pool_callbacks_->onResponse(std::move(response));
-
-  expectExistsRequestCreate();
-  interval_timer_->invokeCallback();
-
-  // Failure, exists
-  EXPECT_CALL(*event_logger_, logEjectUnhealthy(_, _, _));
-  EXPECT_CALL(*timeout_timer_, disableTimer());
-  EXPECT_CALL(*interval_timer_, enableTimer(_, _));
-  response = std::make_unique<NetworkFilters::Common::Redis::RespValue>();
-  response->type(NetworkFilters::Common::Redis::RespType::Integer);
-  response->asInteger() = 1;
-  pool_callbacks_->onResponse(std::move(response));
-
-  expectExistsRequestCreate();
-  interval_timer_->invokeCallback();
-
-  // Failure, no value
-  EXPECT_CALL(*timeout_timer_, disableTimer());
-  EXPECT_CALL(*interval_timer_, enableTimer(_, _));
-  response = std::make_unique<NetworkFilters::Common::Redis::RespValue>();
-  pool_callbacks_->onResponse(std::move(response));
-
-  EXPECT_CALL(*client_, close());
-
-  EXPECT_EQ(3UL, cluster_->info_->stats_store_.counter("health_check.attempt").value());
-  EXPECT_EQ(1UL, cluster_->info_->stats_store_.counter("health_check.success").value());
-  EXPECT_EQ(2UL, cluster_->info_->stats_store_.counter("health_check.failure").value());
-}
-
 TEST_F(RedisHealthCheckerTest, Exists) {
   InSequence s;
   setupExistsHealthcheck();
@@ -678,6 +601,8 @@ TEST_F(RedisHealthCheckerTest, Exists) {
   EXPECT_EQ(3UL, cluster_->info_->stats_store_.counter("health_check.attempt").value());
   EXPECT_EQ(1UL, cluster_->info_->stats_store_.counter("health_check.success").value());
   EXPECT_EQ(2UL, cluster_->info_->stats_store_.counter("health_check.failure").value());
+  EXPECT_EQ(2UL,
+            cluster_->info_->stats_store_.counter("health_check.redis.exists_failure").value());
 }
 
 TEST_F(RedisHealthCheckerTest, ExistsRedirected) {

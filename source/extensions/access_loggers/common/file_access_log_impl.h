@@ -1,8 +1,7 @@
 #pragma once
 
-#include "common/formatter/substitution_formatter.h"
-
-#include "extensions/access_loggers/common/access_log_base.h"
+#include "source/common/formatter/substitution_formatter.h"
+#include "source/extensions/access_loggers/common/access_log_base.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -23,7 +22,8 @@ private:
   void emitLog(const Http::RequestHeaderMap& request_headers,
                const Http::ResponseHeaderMap& response_headers,
                const Http::ResponseTrailerMap& response_trailers,
-               const StreamInfo::StreamInfo& stream_info) override;
+               const StreamInfo::StreamInfo& stream_info,
+               AccessLog::AccessLogType access_log_type) override;
 
   AccessLog::AccessLogFileSharedPtr log_file_;
   Formatter::FormatterPtr formatter_;

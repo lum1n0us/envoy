@@ -20,7 +20,7 @@ envoy_extension_cc_test(
         "util_test.cc",
         "xray_tracer_impl_test.cc",
     ],
-    extension_name = "envoy.tracers.xray",
+    extension_names = ["envoy.tracers.xray"],
     deps = [
         "//source/extensions/tracers/xray:xray_lib",
         "//test/mocks:common_lib",
@@ -30,6 +30,7 @@ envoy_extension_cc_test(
         "//test/mocks/server:instance_mocks",
         "//test/mocks/server:tracer_factory_context_mocks",
         "//test/mocks/stats:stats_mocks",
+        "//test/mocks/stream_info:stream_info_mocks",
         "//test/mocks/thread_local:thread_local_mocks",
         "//test/mocks/tracing:tracing_mocks",
         "//test/test_common:environment_lib",
@@ -41,7 +42,7 @@ envoy_extension_cc_test(
 envoy_extension_cc_test(
     name = "config_test",
     srcs = ["config_test.cc"],
-    extension_name = "envoy.tracers.xray",
+    extension_names = ["envoy.tracers.xray"],
     deps = [
         "//source/extensions/tracers/xray:config",
         "//test/mocks/server:instance_mocks",

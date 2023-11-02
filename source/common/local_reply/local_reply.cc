@@ -1,17 +1,17 @@
-#include "common/local_reply/local_reply.h"
+#include "source/common/local_reply/local_reply.h"
 
 #include <string>
 #include <vector>
 
 #include "envoy/api/api.h"
 
-#include "common/access_log/access_log_impl.h"
-#include "common/common/enum_to_int.h"
-#include "common/config/datasource.h"
-#include "common/formatter/substitution_format_string.h"
-#include "common/formatter/substitution_formatter.h"
-#include "common/http/header_map_impl.h"
-#include "common/router/header_parser.h"
+#include "source/common/access_log/access_log_impl.h"
+#include "source/common/common/enum_to_int.h"
+#include "source/common/config/datasource.h"
+#include "source/common/formatter/substitution_format_string.h"
+#include "source/common/formatter/substitution_formatter.h"
+#include "source/common/http/header_map_impl.h"
+#include "source/common/router/header_parser.h"
 
 namespace Envoy {
 namespace LocalReply {
@@ -22,8 +22,9 @@ public:
       : formatter_(std::make_unique<Envoy::Formatter::FormatterImpl>("%LOCAL_REPLY_BODY%")),
         content_type_(Http::Headers::get().ContentTypeValues.Text) {}
 
-  BodyFormatter(const envoy::config::core::v3::SubstitutionFormatString& config, Api::Api& api)
-      : formatter_(Formatter::SubstitutionFormatStringUtils::fromProtoConfig(config, api)),
+  BodyFormatter(const envoy::config::core::v3::SubstitutionFormatString& config,
+                Server::Configuration::CommonFactoryContext& context)
+      : formatter_(Formatter::SubstitutionFormatStringUtils::fromProtoConfig(config, context)),
         content_type_(
             !config.content_type().empty() ? config.content_type()
             : config.format_case() ==
@@ -36,8 +37,8 @@ public:
               const Http::ResponseTrailerMap& response_trailers,
               const StreamInfo::StreamInfo& stream_info, std::string& body,
               absl::string_view& content_type) const {
-    body =
-        formatter_->format(request_headers, response_headers, response_trailers, stream_info, body);
+    body = formatter_->formatWithContext(
+        {&request_headers, &response_headers, &response_trailers, body}, stream_info);
     content_type = content_type_;
   }
 
@@ -55,9 +56,7 @@ public:
       const envoy::extensions::filters::network::http_connection_manager::v3::ResponseMapper&
           config,
       Server::Configuration::FactoryContext& context)
-      : filter_(AccessLog::FilterFactory::fromProto(config.filter(), context.runtime(),
-                                                    context.api().randomGenerator(),
-                                                    context.messageValidationVisitor())) {
+      : filter_(AccessLog::FilterFactory::fromProto(config.filter(), context)) {
     if (config.has_status_code()) {
       status_code_ = static_cast<Http::Code>(config.status_code().value());
     }
@@ -66,8 +65,7 @@ public:
     }
 
     if (config.has_body_format_override()) {
-      body_formatter_ =
-          std::make_unique<BodyFormatter>(config.body_format_override(), context.api());
+      body_formatter_ = std::make_unique<BodyFormatter>(config.body_format_override(), context);
     }
 
     header_parser_ = Envoy::Router::HeaderParser::configure(config.headers_to_add());
@@ -79,7 +77,9 @@ public:
                        StreamInfo::StreamInfo& stream_info, Http::Code& code, std::string& body,
                        BodyFormatter*& final_formatter) const {
     // If not matched, just bail out.
-    if (!filter_->evaluate(stream_info, request_headers, response_headers, response_trailers)) {
+    if (filter_ == nullptr ||
+        !filter_->evaluate(stream_info, request_headers, response_headers, response_trailers,
+                           AccessLog::AccessLogType::NotSet)) {
       return false;
     }
 
@@ -87,7 +87,8 @@ public:
       body = body_.value();
     }
 
-    header_parser_->evaluateHeaders(response_headers, stream_info);
+    header_parser_->evaluateHeaders(response_headers, request_headers, response_headers,
+                                    stream_info);
 
     if (status_code_.has_value() && code != status_code_.value()) {
       code = status_code_.value();
@@ -120,7 +121,7 @@ public:
           config,
       Server::Configuration::FactoryContext& context)
       : body_formatter_(config.has_body_format()
-                            ? std::make_unique<BodyFormatter>(config.body_format(), context.api())
+                            ? std::make_unique<BodyFormatter>(config.body_format(), context)
                             : std::make_unique<BodyFormatter>()) {
     for (const auto& mapper : config.mappers()) {
       mappers_.emplace_back(std::make_unique<ResponseMapper>(mapper, context));

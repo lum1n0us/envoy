@@ -5,28 +5,28 @@ Attributes
 
 Attributes refer to contextual properties provided by Envoy during request and
 connection processing. They are named by a dot-separated path (e.g.
-`request.path`), have a fixed type (e.g. `string` or `int`), and may be
+``request.path``), have a fixed type (e.g. ``string`` or ``int``), and may be
 absent or present depending on the context. Attributes are exposed to CEL
 runtime in :ref:`RBAC filter <arch_overview_rbac>`, as well as Wasm extensions
-via `get_property` ABI method.
+via ``get_property`` ABI method.
 
 Attribute value types are limited to:
 
-* `string` for UTF-8 strings
-* `bytes` for byte buffers
-* `int` for 64-bit signed integers
-* `uint` for 64-bit unsigned integers
-* `bool` for booleans
-* `list` for lists of values
-* `map` for associative arrays with string keys
-* `timestamp` for timestamps as specified by `Timestamp <https://developers.google.com/protocol-buffers/docs/reference/google.protobuf#timestamp>`_
-* `duration` for durations as specified by `Duration <https://developers.google.com/protocol-buffers/docs/reference/google.protobuf#duration>`_
+* ``string`` for UTF-8 strings
+* ``bytes`` for byte buffers
+* ``int`` for 64-bit signed integers
+* ``uint`` for 64-bit unsigned integers
+* ``bool`` for booleans
+* ``list`` for lists of values
+* ``map`` for associative arrays with string keys
+* ``timestamp`` for timestamps as specified by `Timestamp <https://developers.google.com/protocol-buffers/docs/reference/google.protobuf#timestamp>`_
+* ``duration`` for durations as specified by `Duration <https://developers.google.com/protocol-buffers/docs/reference/google.protobuf#duration>`_
 * Protocol buffer message types
 
 CEL provides standard helper functions for operating on abstract types such as
-`getMonth` for `timestamp` values. Note that integer literals (e.g. `7`) are of
-type `int`, which is distinct from `uint` (e.g. `7u`), and the arithmetic
-conversion is not automatic (use `uint(7)` for explicit conversion).
+``getMonth`` for ``timestamp`` values. Note that integer literals (e.g. ``7``) are of
+type ``int``, which is distinct from ``uint`` (e.g. ``7u``), and the arithmetic
+conversion is not automatic (use ``uint(7)`` for explicit conversion).
 
 Wasm extensions receive the attribute values as a serialized buffer according
 to the type of the attribute. Strings and bytes are passed as-is, integers are
@@ -40,7 +40,9 @@ Request attributes
 ------------------
 
 The following request attributes are generally available upon initial request
-processing, which makes them suitable for RBAC policies:
+processing, which makes them suitable for RBAC policies.
+
+``request.*`` attributes are only available in http filters.
 
 .. csv-table::
    :header: Attribute, Type, Description
@@ -56,10 +58,11 @@ processing, which makes them suitable for RBAC policies:
    request.referer, string, Referer request header
    request.useragent, string, User agent request header
    request.time, timestamp, Time of the first byte received
-   request.id, string, Request ID corresponding to `x-request-id` header value
+   request.id, string, Request ID corresponding to ``x-request-id`` header value
    request.protocol, string, "Request protocol ('"HTTP/1.0'", '"HTTP/1.1'", '"HTTP/2'", or '"HTTP/3'")"
+   request.query, string, The query portion of the URL in the format of "name1=value1&name2=value2".
 
-Header values in `request.headers` associative array are comma-concatenated in case of multiple values.
+Header values in ``request.headers`` associative array are comma-concatenated in case of multiple values.
 
 Additional attributes are available once the request completes:
 
@@ -75,6 +78,8 @@ Response attributes
 -------------------
 
 Response attributes are only available after the request completes.
+
+``response.*`` attributes are only available in http filters.
 
 .. csv-table::
    :header: Attribute, Type, Description
@@ -114,6 +119,7 @@ RBAC):
    connection.dns_san_peer_certificate, string, The first DNS entry in the SAN field of the peer certificate in the downstream TLS connection
    connection.uri_san_local_certificate, string, The first URI entry in the SAN field of the local certificate in the downstream TLS connection
    connection.uri_san_peer_certificate, string, The first URI entry in the SAN field of the peer certificate in the downstream TLS connection
+   connection.sha256_peer_certificate_digest, SHA256 digest of the peer certificate in the downstream TLS connection if present
 
 The following additional attributes are available upon the downstream connection termination:
 
@@ -141,6 +147,7 @@ The following attributes are available once the upstream connection is establish
    upstream.dns_san_peer_certificate, string, The first DNS entry in the SAN field of the peer certificate in the upstream TLS connection
    upstream.uri_san_local_certificate, string, The first URI entry in the SAN field of the local certificate in the upstream TLS connection
    upstream.uri_san_peer_certificate, string, The first URI entry in the SAN field of the peer certificate in the upstream TLS connection
+   upstream.sha256_peer_certificate_digest, SHA256 digest of the peer certificate in the upstream TLS connection if present
    upstream.local_address, string, The local address of the upstream connection
    upstream.transport_failure_reason, string, The upstream transport failure reason e.g. certificate validation failed
 
@@ -153,11 +160,29 @@ Data exchanged between filters is available as the following attributes:
    :header: Attribute, Type, Description
    :widths: 1, 1, 4
 
-   metadata, :ref:`Metadata<envoy_api_msg_core.Metadata>`, Dynamic request metadata
+   metadata, :ref:`Metadata<envoy_v3_api_msg_config.core.v3.metadata>`, Dynamic request metadata
    filter_state, "map<string, bytes>", Mapping from a filter state name to its serialized string value
 
 Note that these attributes may change during the life of a request as the data can be
 updated by filters at any point.
+
+Configuration attributes
+----------------------------
+
+Configuration identifiers and metadata related to the handling of the request or the connection is available as the
+following attributes:
+
+.. csv-table::
+   :header: Attribute, Type, Description
+   :widths: 1, 1, 4
+
+   xds.cluster_name, string, Upstream cluster name
+   xds.cluster_metadata, :ref:`Metadata<envoy_v3_api_msg_config.core.v3.metadata>`, Upstream cluster metadata
+   xds.route_name, string, Route name
+   xds.route_metadata, :ref:`Metadata<envoy_v3_api_msg_config.core.v3.metadata>`, Route metadata
+   xds.upstream_host_metadata, :ref:`Metadata<envoy_v3_api_msg_config.core.v3.metadata>`, Upstream host metadata
+   xds.filter_chain_name, string, Listener filter chain name
+
 
 Wasm attributes
 ---------------
@@ -171,21 +196,21 @@ In addition to all above, the following extra attributes are available to Wasm e
    plugin_name, string, Plugin name
    plugin_root_id, string, Plugin root ID
    plugin_vm_id, string, Plugin VM ID
-   node, :ref:`Node<envoy_api_msg_core.Node>`, Local node description
+   node, :ref:`Node<envoy_v3_api_msg_config.core.v3.node>`, Local node description
    cluster_name, string, Upstream cluster name
-   cluster_metadata, :ref:`Metadata<envoy_api_msg_core.Metadata>`, Upstream cluster metadata
+   cluster_metadata, :ref:`Metadata<envoy_v3_api_msg_config.core.v3.metadata>`, Upstream cluster metadata
    listener_direction, int, Enumeration value of the :ref:`listener traffic direction<envoy_v3_api_field_config.listener.v3.Listener.traffic_direction>`
-   listener_metadata, :ref:`Metadata<envoy_api_msg_core.Metadata>`, Listener metadata
+   listener_metadata, :ref:`Metadata<envoy_v3_api_msg_config.core.v3.metadata>`, Listener metadata
    route_name, string, Route name
-   route_metadata, :ref:`Metadata<envoy_api_msg_core.Metadata>`, Route metadata
-   upstream_host_metadata, :ref:`Metadata<envoy_api_msg_core.Metadata>`, Upstream host metadata
+   route_metadata, :ref:`Metadata<envoy_v3_api_msg_config.core.v3.metadata>`, Route metadata
+   upstream_host_metadata, :ref:`Metadata<envoy_v3_api_msg_config.core.v3.metadata>`, Upstream host metadata
 
 Path expressions
 ----------------
 
 Path expressions allow access to inner fields in structured attributes via a
 sequence of field names, map, and list indexes following an attribute name. For
-example, `get_property({"node", "id"})` in Wasm ABI extracts the value of `id`
-field in `node` message attribute, while `get_property({"request", "headers",
-"my-header"})` refers to the comma-concatenated value of a particular request
+example, ``get_property({"node", "id"})`` in Wasm ABI extracts the value of ``id``
+field in ``node`` message attribute, while ``get_property({"request", "headers",
+"my-header"})`` refers to the comma-concatenated value of a particular request
 header.

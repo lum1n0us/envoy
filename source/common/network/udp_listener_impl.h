@@ -4,10 +4,10 @@
 
 #include "envoy/common/time.h"
 
-#include "common/buffer/buffer_impl.h"
-#include "common/event/event_impl_base.h"
-#include "common/event/file_event_impl.h"
-#include "common/network/utility.h"
+#include "source/common/buffer/buffer_impl.h"
+#include "source/common/event/event_impl_base.h"
+#include "source/common/event/file_event_impl.h"
+#include "source/common/network/utility.h"
 
 #include "base_listener_impl.h"
 
@@ -22,9 +22,8 @@ class UdpListenerImpl : public BaseListenerImpl,
                         public UdpPacketProcessor,
                         protected Logger::Loggable<Logger::Id::udp> {
 public:
-  UdpListenerImpl(Event::DispatcherImpl& dispatcher, SocketSharedPtr socket,
-                  UdpListenerCallbacks& cb, TimeSource& time_source,
-                  const envoy::config::core::v3::UdpSocketConfig& config);
+  UdpListenerImpl(Event::Dispatcher& dispatcher, SocketSharedPtr socket, UdpListenerCallbacks& cb,
+                  TimeSource& time_source, const envoy::config::core::v3::UdpSocketConfig& config);
   ~UdpListenerImpl() override;
   uint32_t packetsDropped() { return packets_dropped_; }
 
@@ -32,6 +31,7 @@ public:
   void disable() override;
   void enable() override;
   void setRejectFraction(UnitFloat) override {}
+  void configureLoadShedPoints(Server::LoadShedPointProvider&) override {}
 
   // Network::UdpListener
   Event::Dispatcher& dispatcher() override;
@@ -46,6 +46,9 @@ public:
                      MonotonicTime receive_time) override;
   uint64_t maxDatagramSize() const override { return config_.max_rx_datagram_size_; }
   void onDatagramsDropped(uint32_t dropped) override { cb_.onDatagramsDropped(dropped); }
+  size_t numPacketsExpectedPerEventLoop() const override {
+    return cb_.numPacketsExpectedPerEventLoop();
+  }
 
 protected:
   void handleWriteCallback();

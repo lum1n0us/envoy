@@ -9,9 +9,9 @@
 #include "envoy/stats/stats_macros.h"
 #include "envoy/stats/store.h"
 
-#include "common/buffer/buffer_impl.h"
-#include "common/common/logger.h"
-#include "common/common/thread.h"
+#include "source/common/buffer/buffer_impl.h"
+#include "source/common/common/logger.h"
+#include "source/common/common/thread.h"
 
 #include "absl/container/node_hash_map.h"
 
@@ -114,8 +114,8 @@ private:
                    // high performance. It is always local to the process.
   Thread::ThreadPtr flush_thread_;
   Thread::CondVar flush_event_;
-  std::atomic<bool> flush_thread_exit_{};
-  std::atomic<bool> reopen_file_{};
+  bool flush_thread_exit_ ABSL_GUARDED_BY(write_lock_){false};
+  bool reopen_file_ ABSL_GUARDED_BY(write_lock_){false};
   Buffer::OwnedImpl
       flush_buffer_ ABSL_GUARDED_BY(write_lock_); // This buffer is used by multiple threads. It
                                                   // gets filled and then flushed either when max

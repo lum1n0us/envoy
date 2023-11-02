@@ -8,12 +8,12 @@
 #include "envoy/config/endpoint/v3/endpoint_components.pb.h"
 #include "envoy/upstream/upstream.h"
 
-#include "common/common/utility.h"
-#include "common/config/metadata.h"
-#include "common/config/well_known_names.h"
-#include "common/json/json_loader.h"
-#include "common/network/utility.h"
-#include "common/upstream/upstream_impl.h"
+#include "source/common/common/utility.h"
+#include "source/common/config/metadata.h"
+#include "source/common/config/well_known_names.h"
+#include "source/common/json/json_loader.h"
+#include "source/common/network/utility.h"
+#include "source/common/upstream/upstream_impl.h"
 
 #include "test/test_common/utility.h"
 
@@ -55,28 +55,43 @@ inline std::string defaultStaticClusterJson(const std::string& name) {
 }
 
 inline envoy::config::bootstrap::v3::Bootstrap
-parseBootstrapFromV3Json(const std::string& json_string, bool avoid_boosting = true) {
+parseBootstrapFromV3Json(const std::string& json_string) {
   envoy::config::bootstrap::v3::Bootstrap bootstrap;
-  TestUtility::loadFromJson(json_string, bootstrap, true, avoid_boosting);
+  // TODO(alyssawilk) rename to JSON
+#ifdef ENVOY_ENABLE_YAML
+  TestUtility::loadFromJson(json_string, bootstrap);
+#else
+  PANIC("JSON compiled out: cannot parse " + json_string);
+#endif
   return bootstrap;
 }
 
-inline envoy::config::cluster::v3::Cluster parseClusterFromV3Json(const std::string& json_string,
-                                                                  bool avoid_boosting = true) {
+inline envoy::config::cluster::v3::Cluster parseClusterFromV3Json(const std::string& json_string) {
   envoy::config::cluster::v3::Cluster cluster;
-  TestUtility::loadFromJson(json_string, cluster, true, avoid_boosting);
+#ifdef ENVOY_ENABLE_YAML
+  TestUtility::loadFromJson(json_string, cluster);
+#else
+  PANIC("JSON compiled out: cannot parse " + json_string);
+#endif
   return cluster;
 }
 
-inline envoy::config::cluster::v3::Cluster parseClusterFromV3Yaml(const std::string& yaml,
-                                                                  bool avoid_boosting = true) {
+inline envoy::config::cluster::v3::Cluster parseClusterFromV3Yaml(const std::string& yaml) {
   envoy::config::cluster::v3::Cluster cluster;
-  TestUtility::loadFromYaml(yaml, cluster, true, avoid_boosting);
+#ifdef ENVOY_ENABLE_YAML
+  TestUtility::loadFromYaml(yaml, cluster);
+#else
+  PANIC("JSON compiled out: cannot parse " + yaml);
+#endif
   return cluster;
 }
 
 inline envoy::config::cluster::v3::Cluster defaultStaticCluster(const std::string& name) {
+#ifdef ENVOY_ENABLE_YAML
   return parseClusterFromV3Json(defaultStaticClusterJson(name));
+#else
+  PANIC("JSON compiled out: cannot parse " + name);
+#endif
 }
 
 inline HostSharedPtr makeTestHost(ClusterInfoConstSharedPtr cluster, const std::string& hostname,
@@ -91,12 +106,24 @@ inline HostSharedPtr makeTestHost(ClusterInfoConstSharedPtr cluster, const std::
 
 inline HostSharedPtr makeTestHost(ClusterInfoConstSharedPtr cluster, const std::string& url,
                                   TimeSource& time_source, uint32_t weight = 1,
-                                  uint32_t priority = 0) {
+                                  uint32_t priority = 0,
+                                  Host::HealthStatus status = Host::HealthStatus::UNKNOWN) {
   return std::make_shared<HostImpl>(
       cluster, "", Network::Utility::resolveUrl(url), nullptr, weight,
       envoy::config::core::v3::Locality(),
       envoy::config::endpoint::v3::Endpoint::HealthCheckConfig::default_instance(), priority,
-      envoy::config::core::v3::UNKNOWN, time_source);
+      status, time_source);
+}
+
+inline HostSharedPtr makeTestHost(ClusterInfoConstSharedPtr cluster, const std::string& url,
+                                  TimeSource& time_source,
+                                  envoy::config::core::v3::Locality locality, uint32_t weight = 1,
+                                  uint32_t priority = 0,
+                                  Host::HealthStatus status = Host::HealthStatus::UNKNOWN) {
+  return std::make_shared<HostImpl>(
+      cluster, "", Network::Utility::resolveUrl(url), nullptr, weight, locality,
+      envoy::config::endpoint::v3::Endpoint::HealthCheckConfig::default_instance(), priority,
+      status, time_source);
 }
 
 inline HostSharedPtr makeTestHost(ClusterInfoConstSharedPtr cluster, const std::string& url,
@@ -106,6 +133,17 @@ inline HostSharedPtr makeTestHost(ClusterInfoConstSharedPtr cluster, const std::
       cluster, "", Network::Utility::resolveUrl(url),
       std::make_shared<const envoy::config::core::v3::Metadata>(metadata), weight,
       envoy::config::core::v3::Locality(),
+      envoy::config::endpoint::v3::Endpoint::HealthCheckConfig::default_instance(), 0,
+      envoy::config::core::v3::UNKNOWN, time_source);
+}
+
+inline HostSharedPtr makeTestHost(ClusterInfoConstSharedPtr cluster, const std::string& url,
+                                  const envoy::config::core::v3::Metadata& metadata,
+                                  envoy::config::core::v3::Locality locality,
+                                  TimeSource& time_source, uint32_t weight = 1) {
+  return std::make_shared<HostImpl>(
+      cluster, "", Network::Utility::resolveUrl(url),
+      std::make_shared<const envoy::config::core::v3::Metadata>(metadata), weight, locality,
       envoy::config::endpoint::v3::Endpoint::HealthCheckConfig::default_instance(), 0,
       envoy::config::core::v3::UNKNOWN, time_source);
 }
@@ -166,17 +204,13 @@ makeLocalityWeights(std::initializer_list<uint32_t> locality_weights) {
 }
 
 inline envoy::config::core::v3::HealthCheck
-parseHealthCheckFromV3Yaml(const std::string& yaml_string, bool avoid_boosting = true) {
+parseHealthCheckFromV3Yaml(const std::string& yaml_string) {
   envoy::config::core::v3::HealthCheck health_check;
-  TestUtility::loadFromYamlAndValidate(yaml_string, health_check, false, avoid_boosting);
-  return health_check;
-}
-
-// For DEPRECATED TEST CASES
-inline envoy::config::core::v3::HealthCheck
-parseHealthCheckFromV2Yaml(const std::string& yaml_string) {
-  envoy::config::core::v3::HealthCheck health_check;
+#ifdef ENVOY_ENABLE_YAML
   TestUtility::loadFromYamlAndValidate(yaml_string, health_check);
+#else
+  PANIC("JSON compiled out: cannot parse " + yaml_string);
+#endif
   return health_check;
 }
 

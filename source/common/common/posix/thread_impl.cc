@@ -1,5 +1,5 @@
-#include "common/common/assert.h"
-#include "common/common/thread_impl.h"
+#include "source/common/common/assert.h"
+#include "source/common/common/thread_impl.h"
 
 #include "absl/strings/str_cat.h"
 
@@ -99,14 +99,10 @@ private:
   // may fail, if the thread exits prior to the system call.
   bool getNameFromOS(std::string& name) {
     // Verify that the name got written into the thread as expected.
-    char buf[PTHREAD_MAX_THREADNAME_LEN_INCLUDING_NULL_BYTE];
+    char buf[PTHREAD_MAX_THREADNAME_LEN_INCLUDING_NULL_BYTE] = {0};
     const int get_name_rc = pthread_getname_np(thread_handle_, buf, sizeof(buf));
-    if (get_name_rc != 0) {
-      ENVOY_LOG_MISC(trace, "Error {} getting name", get_name_rc);
-      return false;
-    }
     name = buf;
-    return true;
+    return get_name_rc == 0;
   }
 #endif
 

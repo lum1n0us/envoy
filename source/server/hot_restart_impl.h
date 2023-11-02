@@ -11,11 +11,10 @@
 #include "envoy/common/platform.h"
 #include "envoy/server/hot_restart.h"
 
-#include "common/common/assert.h"
-#include "common/stats/allocator_impl.h"
-
-#include "server/hot_restarting_child.h"
-#include "server/hot_restarting_parent.h"
+#include "source/common/common/assert.h"
+#include "source/common/stats/allocator_impl.h"
+#include "source/server/hot_restarting_child.h"
+#include "source/server/hot_restarting_parent.h"
 
 namespace Envoy {
 namespace Server {
@@ -103,9 +102,12 @@ public:
 
   // Server::HotRestart
   void drainParentListeners() override;
-  int duplicateParentListenSocket(const std::string& address) override;
+  int duplicateParentListenSocket(const std::string& address, uint32_t worker_index) override;
+  void registerUdpForwardingListener(
+      Network::Address::InstanceConstSharedPtr address,
+      std::shared_ptr<Network::UdpListenerConfig> listener_config) override;
   void initialize(Event::Dispatcher& dispatcher, Server::Instance& server) override;
-  void sendParentAdminShutdownRequest(time_t& original_start_time) override;
+  absl::optional<AdminShutdownResponse> sendParentAdminShutdownRequest() override;
   void sendParentTerminateRequest() override;
   ServerStatsFromParent mergeParentStatsIfAny(Stats::StoreRoot& stats_store) override;
   void shutdown() override;
@@ -121,6 +123,7 @@ public:
   static std::string hotRestartVersion();
 
 private:
+  friend class HotRestartUdpForwardingTestHelper;
   uint32_t base_id_;
   uint32_t scaled_base_id_;
   HotRestartingChild as_child_;

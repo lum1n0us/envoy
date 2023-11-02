@@ -12,6 +12,8 @@ namespace Grpc {
 const uint8_t GRPC_FH_DEFAULT = 0b0u;
 // Last bit for a compressed message.
 const uint8_t GRPC_FH_COMPRESSED = 0b1u;
+// Bit specifies end-of-stream response in Buf Connect.
+const uint8_t CONNECT_FH_EOS = 0b10u;
 
 constexpr uint64_t GRPC_FRAME_HEADER_SIZE = sizeof(uint8_t) + sizeof(uint32_t);
 
@@ -35,16 +37,23 @@ public:
 
   // Prepend the gRPC frame into the buffer.
   // @param flags supplies the GRPC data frame flags.
-  // @param buffer the buffer with the message payload.
+  // @param buffer the full buffer with the message payload.
   void prependFrameHeader(uint8_t flags, Buffer::Instance& buffer);
+
+  // Prepend the gRPC frame into the buffer.
+  // @param flags supplies the GRPC data frame flags.
+  // @param buffer the buffer with the first part of the message payload.
+  // @param message_length the total length of the message, which may be longer
+  // than buffer.
+  void prependFrameHeader(uint8_t flags, Buffer::Instance& buffer, uint32_t message_length);
 };
 
 // Wire format (http://www.grpc.io/docs/guides/wire.html) of GRPC data frame
 // header:
 //
-// -----------------------------------------------------------------------
-// |R|R|R|R|R|R|R|R|C|      L     |      L     |      L     |      L     |
-// -----------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// |R|R|R|R|R|R|R|C|      L     |      L     |      L     |      L     |
+// ---------------------------------------------------------------------
 //    Flag (1 byte)                Message Length (4 bytes)
 //
 // A fixed header consists of five bytes.
@@ -96,7 +105,13 @@ protected:
   virtual void frameDataEnd() {}
 
   State state_{State::FhFlag};
-  uint32_t length_{0};
+  union {
+    // Note that this union does not rely on bytes being arranged accurately for a
+    // uint32_t, it merely shares the storage. absl::big_endian is used to deserialize
+    // the bytes correctly once they are populated.
+    uint32_t length_{0};
+    uint8_t length_as_bytes_[4];
+  };
   uint64_t count_{0};
 };
 

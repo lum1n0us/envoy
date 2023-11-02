@@ -7,12 +7,12 @@
 
 #include "envoy/config/trace/v3/opencensus.pb.h"
 
-#include "common/common/base64.h"
-
-#include "extensions/tracers/opencensus/opencensus_tracer_impl.h"
+#include "source/common/common/base64.h"
+#include "source/extensions/tracers/opencensus/opencensus_tracer_impl.h"
 
 #include "test/mocks/http/mocks.h"
 #include "test/mocks/local_info/mocks.h"
+#include "test/mocks/stream_info/mocks.h"
 #include "test/mocks/tracing/mocks.h"
 
 #include "gmock/gmock.h"
@@ -110,16 +110,17 @@ TEST(OpenCensusTracerTest, Span) {
   Http::TestRequestHeaderMapImpl request_headers{
       {":path", "/"}, {":method", "GET"}, {"x-request-id", "foo"}};
   const std::string operation_name{"my_operation_1"};
-  SystemTime start_time;
+  SystemTime fake_system_time;
+  NiceMock<StreamInfo::MockStreamInfo> stream_info;
 
   {
-    Tracing::SpanPtr span = driver->startSpan(config, request_headers, operation_name, start_time,
+    Tracing::SpanPtr span = driver->startSpan(config, request_headers, stream_info, operation_name,
                                               {Tracing::Reason::Sampling, true});
     span->setOperation("different_name");
     span->setTag("my_key", "my_value");
-    span->log(start_time, "my annotation");
+    span->log(fake_system_time, "my annotation");
     // injectContext is tested in another unit test.
-    Tracing::SpanPtr child = span->spawnChild(config, "child_span", start_time);
+    Tracing::SpanPtr child = span->spawnChild(config, "child_span", fake_system_time);
     child->finishSpan();
     span->setSampled(false); // Abandon tracer.
     span->finishSpan();
@@ -149,10 +150,9 @@ TEST(OpenCensusTracerTest, Span) {
     EXPECT_EQ(zeros, sd.parent_span_id());
     parent_span_id = sd.context().span_id();
 
-    ASSERT_EQ(3, sd.annotations().events().size());
+    ASSERT_EQ(2, sd.annotations().events().size());
     EXPECT_EQ("my annotation", sd.annotations().events()[0].event().description());
-    EXPECT_EQ("spawnChild", sd.annotations().events()[1].event().description());
-    EXPECT_EQ("setSampled", sd.annotations().events()[2].event().description());
+    EXPECT_EQ("setSampled", sd.annotations().events()[1].event().description());
     EXPECT_TRUE(sd.has_ended());
   }
 
@@ -213,12 +213,12 @@ void testIncomingHeaders(
   }
 
   const std::string operation_name{"my_operation_2"};
-  SystemTime start_time;
+  NiceMock<StreamInfo::MockStreamInfo> stream_info;
   Http::TestRequestHeaderMapImpl injected_headers;
   {
-    Tracing::SpanPtr span = driver->startSpan(config, request_headers, operation_name, start_time,
+    Tracing::SpanPtr span = driver->startSpan(config, request_headers, stream_info, operation_name,
                                               {Tracing::Reason::Sampling, false});
-    span->injectContext(injected_headers);
+    span->injectContext(injected_headers, nullptr);
     span->finishSpan();
 
     // Check contents via public API.
@@ -289,7 +289,7 @@ namespace {
 
 // Create a Span using the given config and return how many spans made it to
 // the exporter (either zero or one).
-int SamplerTestHelper(const OpenCensusConfig& oc_config) {
+int samplerTestHelper(const OpenCensusConfig& oc_config) {
   registerSpanCatcher();
   NiceMock<LocalInfo::MockLocalInfo> local_info;
   std::unique_ptr<Tracing::Driver> driver(
@@ -313,7 +313,7 @@ TEST(OpenCensusTracerTest, ConstantSamplerAlwaysOn) {
   OpenCensusConfig oc_config;
   oc_config.mutable_trace_config()->mutable_constant_sampler()->set_decision(
       ::opencensus::proto::trace::v1::ConstantSampler::ALWAYS_ON);
-  EXPECT_EQ(1, SamplerTestHelper(oc_config));
+  EXPECT_EQ(1, samplerTestHelper(oc_config));
 }
 
 // Test constant_sampler that's always off.
@@ -321,21 +321,21 @@ TEST(OpenCensusTracerTest, ConstantSamplerAlwaysOff) {
   OpenCensusConfig oc_config;
   oc_config.mutable_trace_config()->mutable_constant_sampler()->set_decision(
       ::opencensus::proto::trace::v1::ConstantSampler::ALWAYS_OFF);
-  EXPECT_EQ(0, SamplerTestHelper(oc_config));
+  EXPECT_EQ(0, samplerTestHelper(oc_config));
 }
 
 // Test probability_sampler that's always on.
 TEST(OpenCensusTracerTest, ProbabilitySamplerAlwaysOn) {
   OpenCensusConfig oc_config;
   oc_config.mutable_trace_config()->mutable_probability_sampler()->set_samplingprobability(1.0);
-  EXPECT_EQ(1, SamplerTestHelper(oc_config));
+  EXPECT_EQ(1, samplerTestHelper(oc_config));
 }
 
 // Test probability_sampler that's always off.
 TEST(OpenCensusTracerTest, ProbabilitySamplerAlwaysOff) {
   OpenCensusConfig oc_config;
   oc_config.mutable_trace_config()->mutable_probability_sampler()->set_samplingprobability(0.0);
-  EXPECT_EQ(0, SamplerTestHelper(oc_config));
+  EXPECT_EQ(0, samplerTestHelper(oc_config));
 }
 
 } // namespace OpenCensus

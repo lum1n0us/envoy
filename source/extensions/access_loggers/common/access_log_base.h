@@ -8,8 +8,8 @@
 #include "envoy/runtime/runtime.h"
 #include "envoy/server/access_log_config.h"
 
-#include "common/http/header_utility.h"
-#include "common/protobuf/protobuf.h"
+#include "source/common/http/header_utility.h"
+#include "source/common/protobuf/protobuf.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -29,7 +29,8 @@ public:
   void log(const Http::RequestHeaderMap* request_headers,
            const Http::ResponseHeaderMap* response_headers,
            const Http::ResponseTrailerMap* response_trailers,
-           const StreamInfo::StreamInfo& stream_info) override;
+           const StreamInfo::StreamInfo& stream_info,
+           AccessLog::AccessLogType access_log_type) override;
 
 private:
   /**
@@ -43,7 +44,8 @@ private:
   virtual void emitLog(const Http::RequestHeaderMap& request_headers,
                        const Http::ResponseHeaderMap& response_headers,
                        const Http::ResponseTrailerMap& response_trailers,
-                       const StreamInfo::StreamInfo& stream_info) PURE;
+                       const StreamInfo::StreamInfo& stream_info,
+                       AccessLog::AccessLogType access_log_type) PURE;
 
   AccessLog::FilterPtr filter_;
 };

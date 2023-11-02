@@ -1,17 +1,18 @@
-#include "common/network/filter_manager_impl.h"
+#include "source/common/network/filter_manager_impl.h"
 
 #include <list>
 
 #include "envoy/network/connection.h"
 
-#include "common/common/assert.h"
+#include "source/common/common/assert.h"
+#include "source/common/runtime/runtime_features.h"
 
 namespace Envoy {
 namespace Network {
 
 void FilterManagerImpl::addWriteFilter(WriteFilterSharedPtr filter) {
   ASSERT(connection_.state() == Connection::State::Open);
-  ActiveWriteFilterPtr new_filter(new ActiveWriteFilter{*this, filter});
+  ActiveWriteFilterPtr new_filter = std::make_unique<ActiveWriteFilter>(*this, filter);
   filter->initializeWriteFilterCallbacks(*new_filter);
   LinkedList::moveIntoList(std::move(new_filter), downstream_filters_);
 }
@@ -23,7 +24,7 @@ void FilterManagerImpl::addFilter(FilterSharedPtr filter) {
 
 void FilterManagerImpl::addReadFilter(ReadFilterSharedPtr filter) {
   ASSERT(connection_.state() == Connection::State::Open);
-  ActiveReadFilterPtr new_filter(new ActiveReadFilter{*this, filter});
+  ActiveReadFilterPtr new_filter = std::make_unique<ActiveReadFilter>(*this, filter);
   filter->initializeReadFilterCallbacks(*new_filter);
   LinkedList::moveIntoListBack(std::move(new_filter), upstream_filters_);
 }
@@ -41,7 +42,23 @@ bool FilterManagerImpl::initializeReadFilters() {
   if (upstream_filters_.empty()) {
     return false;
   }
-  onContinueReading(nullptr, connection_);
+  if (Runtime::runtimeFeatureEnabled("envoy.reloadable_features.initialize_upstream_filters")) {
+    // Initialize read filters without calling onData() afterwards.
+    // This is called just after an connection has been established and nothing may have been read
+    // yet. onData() will be called separately as data is read from the connection.
+    for (auto& entry : upstream_filters_) {
+      if (entry->filter_ && !entry->initialized_) {
+        entry->initialized_ = true;
+        FilterStatus status = entry->filter_->onNewConnection();
+        if (status == FilterStatus::StopIteration ||
+            connection_.state() != Connection::State::Open) {
+          break;
+        }
+      }
+    }
+  } else {
+    onContinueReading(nullptr, connection_);
+  }
   return true;
 }
 
@@ -86,6 +103,16 @@ void FilterManagerImpl::onContinueReading(ActiveReadFilter* filter,
 void FilterManagerImpl::onRead() {
   ASSERT(!upstream_filters_.empty());
   onContinueReading(nullptr, connection_);
+}
+
+bool FilterManagerImpl::startUpstreamSecureTransport() {
+  for (auto& filter : upstream_filters_) {
+    if (filter->filter_ != nullptr && filter->filter_->startUpstreamSecureTransport()) {
+      // Success. The filter converted upstream's transport socket to secure mode.
+      return true;
+    }
+  }
+  return false;
 }
 
 FilterStatus FilterManagerImpl::onWrite() { return onWrite(nullptr, connection_); }

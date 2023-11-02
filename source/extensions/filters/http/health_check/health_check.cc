@@ -1,4 +1,4 @@
-#include "extensions/filters/http/health_check/health_check.h"
+#include "source/extensions/filters/http/health_check/health_check.h"
 
 #include <chrono>
 #include <string>
@@ -7,13 +7,13 @@
 #include "envoy/event/timer.h"
 #include "envoy/http/header_map.h"
 
-#include "common/common/assert.h"
-#include "common/common/enum_to_int.h"
-#include "common/http/codes.h"
-#include "common/http/header_map_impl.h"
-#include "common/http/headers.h"
-#include "common/http/utility.h"
-#include "common/protobuf/utility.h"
+#include "source/common/common/assert.h"
+#include "source/common/common/enum_to_int.h"
+#include "source/common/http/codes.h"
+#include "source/common/http/header_map_impl.h"
+#include "source/common/http/headers.h"
+#include "source/common/http/utility.h"
+#include "source/common/protobuf/utility.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -106,9 +106,7 @@ Http::FilterHeadersStatus HealthCheckFilter::encodeHeaders(Http::ResponseHeaderM
     headers.setEnvoyUpstreamHealthCheckedCluster(context_.localInfo().clusterName());
   }
 
-  if (context_.healthCheckFailed() &&
-      Runtime::runtimeFeatureEnabled(
-          "envoy.reloadable_features.health_check.immediate_failure_exclude_from_cluster")) {
+  if (context_.healthCheckFailed()) {
     headers.setReferenceEnvoyImmediateHealthCheckFail(
         Http::Headers::get().EnvoyImmediateHealthCheckFailValues.True);
   }
@@ -147,8 +145,8 @@ void HealthCheckFilter::onComplete() {
 
           break;
         }
-        const auto& stats = cluster->info()->stats();
-        const uint64_t membership_total = stats.membership_total_.value();
+        const auto& endpoint_stats = cluster->info()->endpointStats();
+        const uint64_t membership_total = endpoint_stats.membership_total_.value();
         if (membership_total == 0) {
           // If the cluster exists but is empty, consider the service unhealthy unless
           // the specified minimum percent healthy for the cluster happens to be zero.
@@ -162,7 +160,8 @@ void HealthCheckFilter::onComplete() {
         }
         // In the general case, consider the service unhealthy if fewer than the
         // specified percentage of the servers in the cluster are available (healthy + degraded).
-        if ((100UL * (stats.membership_healthy_.value() + stats.membership_degraded_.value())) <
+        if ((100UL * (endpoint_stats.membership_healthy_.value() +
+                      endpoint_stats.membership_degraded_.value())) <
             membership_total * min_healthy_percentage) {
           final_status = Http::Code::ServiceUnavailable;
           details = &RcDetails::get().HealthCheckClusterUnhealthy;

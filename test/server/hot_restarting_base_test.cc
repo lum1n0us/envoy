@@ -1,4 +1,4 @@
-#include "server/hot_restarting_base.h"
+#include "source/server/hot_restarting_base.h"
 
 #include "test/mocks/api/mocks.h"
 #include "test/mocks/network/mocks.h"
@@ -15,10 +15,10 @@ using HotRestartMessage = envoy::HotRestartMessage;
 class MockHotRestartingBase : public HotRestartingBase {
 public:
   MockHotRestartingBase(const std::string& socket_path) : HotRestartingBase(0) {
-    bindDomainSocket(1, "parent", socket_path, 0644);
+    main_rpc_stream_.bindDomainSocket(1, "parent", socket_path, 0644);
   }
   void sendMessage(sockaddr_un& address, const envoy::HotRestartMessage& message) {
-    sendHotRestartMessage(address, message);
+    main_rpc_stream_.sendHotRestartMessage(address, message);
   }
 };
 

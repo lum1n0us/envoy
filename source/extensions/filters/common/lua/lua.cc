@@ -1,12 +1,12 @@
-#include "extensions/filters/common/lua/lua.h"
+#include "source/extensions/filters/common/lua/lua.h"
 
 #include <memory>
 
 #include "envoy/common/exception.h"
 
-#include "common/common/assert.h"
-#include "common/common/lock_guard.h"
-#include "common/common/thread.h"
+#include "source/common/common/assert.h"
+#include "source/common/common/lock_guard.h"
+#include "source/common/common/thread.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -44,6 +44,9 @@ void Coroutine::resume(int num_args, const std::function<void()>& yield_callback
   } else {
     state_ = State::Finished;
     const char* error = lua_tostring(coroutine_state_.get(), -1);
+    if (!error) {
+      error = "unspecified lua error";
+    }
     throw LuaException(error);
   }
 }

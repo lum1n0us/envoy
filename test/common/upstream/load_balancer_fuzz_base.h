@@ -2,7 +2,7 @@
 
 #include "envoy/config/cluster/v3/cluster.pb.h"
 
-#include "common/upstream/load_balancer_impl.h"
+#include "source/common/upstream/load_balancer_impl.h"
 
 #include "test/common/upstream/load_balancer_fuzz.pb.validate.h"
 #include "test/fuzz/random.h"
@@ -21,8 +21,7 @@ namespace Upstream {
 class LoadBalancerFuzzBase {
 public:
   LoadBalancerFuzzBase()
-      : stat_names_(stats_store_.symbolTable()),
-        stats_(ClusterInfoImpl::generateStats(stats_store_, stat_names_)){};
+      : stat_names_(stats_store_.symbolTable()), stats_(stat_names_, *stats_store_.rootScope()){};
 
   // Initializes load balancer components shared amongst every load balancer, random_, and
   // priority_set_
@@ -42,8 +41,8 @@ public:
   // These public objects shared amongst all types of load balancers will be used to construct load
   // balancers in specific load balancer fuzz classes
   Stats::IsolatedStoreImpl stats_store_;
-  ClusterStatNames stat_names_;
-  ClusterStats stats_;
+  ClusterLbStatNames stat_names_;
+  ClusterLbStats stats_;
   NiceMock<Runtime::MockLoader> runtime_;
   Random::PsuedoRandomGenerator64 random_;
   NiceMock<MockPrioritySet> priority_set_;

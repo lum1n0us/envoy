@@ -3,59 +3,21 @@
 #include "envoy/config/core/v3/base.pb.h"
 #include "envoy/extensions/filters/http/ext_authz/v3/ext_authz.pb.h"
 #include "envoy/service/auth/v3/external_auth.pb.h"
-#include "envoy/tracing/http_tracer.h"
+#include "envoy/tracing/tracer.h"
 #include "envoy/type/matcher/v3/string.pb.h"
 #include "envoy/upstream/cluster_manager.h"
 
-#include "common/common/logger.h"
-#include "common/common/matchers.h"
-#include "common/router/header_parser.h"
-
-#include "extensions/filters/common/ext_authz/ext_authz.h"
+#include "source/common/common/logger.h"
+#include "source/common/common/matchers.h"
+#include "source/common/router/header_parser.h"
+#include "source/extensions/filters/common/ext_authz/check_request_utils.h"
+#include "source/extensions/filters/common/ext_authz/ext_authz.h"
 
 namespace Envoy {
 namespace Extensions {
 namespace Filters {
 namespace Common {
 namespace ExtAuthz {
-
-class Matcher;
-using MatcherSharedPtr = std::shared_ptr<Matcher>;
-
-/**
- *  Matchers describe the rules for matching authorization request and response headers.
- */
-class Matcher {
-public:
-  virtual ~Matcher() = default;
-
-  /**
-   * Returns whether or not the header key matches the rules of the matcher.
-   *
-   * @param key supplies the header key to be evaluated.
-   */
-  virtual bool matches(absl::string_view key) const PURE;
-};
-
-class HeaderKeyMatcher : public Matcher {
-public:
-  HeaderKeyMatcher(std::vector<Matchers::StringMatcherPtr>&& list);
-
-  bool matches(absl::string_view key) const override;
-
-private:
-  const std::vector<Matchers::StringMatcherPtr> matchers_;
-};
-
-class NotHeaderKeyMatcher : public Matcher {
-public:
-  NotHeaderKeyMatcher(std::vector<Matchers::StringMatcherPtr>&& list);
-
-  bool matches(absl::string_view key) const override;
-
-private:
-  const HeaderKeyMatcher matcher_;
-};
 
 /**
  * HTTP client configuration for the HTTP authorization (ext_authz) filter.
@@ -81,12 +43,6 @@ public:
   const std::chrono::milliseconds& timeout() const { return timeout_; }
 
   /**
-   * Returns a list of matchers used for selecting the request headers that should be sent to the
-   * authorization server.
-   */
-  const MatcherSharedPtr& requestHeaderMatchers() const { return request_header_matchers_; }
-
-  /**
    * Returns a list of matchers used for selecting the authorization response headers that
    * should be send back to the client.
    */
@@ -99,6 +55,11 @@ public:
   const MatcherSharedPtr& clientHeaderOnSuccessMatchers() const {
     return client_header_on_success_matchers_;
   }
+
+  /**
+   * Returns a list of matchers used for selecting the headers to emit as dynamic metadata.
+   */
+  const MatcherSharedPtr& dynamicMetadataMatchers() const { return to_dynamic_metadata_matchers_; }
 
   /**
    * Returns a list of matchers used for selecting the authorization response headers that
@@ -126,17 +87,18 @@ public:
   const Router::HeaderParser& requestHeaderParser() const { return *request_headers_parser_; }
 
 private:
-  static MatcherSharedPtr
-  toRequestMatchers(const envoy::type::matcher::v3::ListStringMatcher& list);
   static MatcherSharedPtr toClientMatchers(const envoy::type::matcher::v3::ListStringMatcher& list);
   static MatcherSharedPtr
   toClientMatchersOnSuccess(const envoy::type::matcher::v3::ListStringMatcher& list);
+  static MatcherSharedPtr
+  toDynamicMetadataMatchers(const envoy::type::matcher::v3::ListStringMatcher& list);
   static MatcherSharedPtr
   toUpstreamMatchers(const envoy::type::matcher::v3::ListStringMatcher& list);
 
   const MatcherSharedPtr request_header_matchers_;
   const MatcherSharedPtr client_header_matchers_;
   const MatcherSharedPtr client_header_on_success_matchers_;
+  const MatcherSharedPtr to_dynamic_metadata_matchers_;
   const MatcherSharedPtr upstream_header_matchers_;
   const MatcherSharedPtr upstream_header_to_append_matchers_;
   const std::string cluster_name_;

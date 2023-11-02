@@ -9,15 +9,16 @@ Network::IoHandle& FakeConnectionSocket::ioHandle() { return *io_handle_; }
 const Network::IoHandle& FakeConnectionSocket::ioHandle() const { return *io_handle_; }
 
 Network::Address::Type FakeConnectionSocket::addressType() const {
-  return address_provider_->localAddress()->type();
+  return connection_info_provider_->localAddress()->type();
 }
 
 absl::optional<Network::Address::IpVersion> FakeConnectionSocket::ipVersion() const {
-  if (address_provider_->localAddress() == nullptr || addressType() != Network::Address::Type::Ip) {
+  if (connection_info_provider_->localAddress() == nullptr ||
+      addressType() != Network::Address::Type::Ip) {
     return absl::nullopt;
   }
 
-  return address_provider_->localAddress()->ip()->version();
+  return connection_info_provider_->localAddress()->ip()->version();
 }
 
 void FakeConnectionSocket::setDetectedTransportProtocol(absl::string_view protocol) {
@@ -46,7 +47,14 @@ void FakeConnectionSocket::setRequestedServerName(absl::string_view server_name)
 
 absl::string_view FakeConnectionSocket::requestedServerName() const { return server_name_; }
 
-Api::SysCallIntResult FakeConnectionSocket::getSocketOption(int level, int, void* optval,
+void FakeConnectionSocket::setJA3Hash(absl::string_view ja3_hash) {
+  ja3_hash_ = std::string(ja3_hash);
+}
+
+absl::string_view FakeConnectionSocket::ja3Hash() const { return ja3_hash_; }
+
+Api::SysCallIntResult FakeConnectionSocket::getSocketOption([[maybe_unused]] int level, int,
+                                                            [[maybe_unused]] void* optval,
                                                             socklen_t*) const {
 #ifdef SOL_IP
   switch (level) {
@@ -57,7 +65,7 @@ Api::SysCallIntResult FakeConnectionSocket::getSocketOption(int level, int, void
     static_cast<sockaddr_storage*>(optval)->ss_family = AF_INET;
     break;
   default:
-    NOT_REACHED_GCOVR_EXCL_LINE;
+    PANIC("reached unexpected code");
   }
 
   return Api::SysCallIntResult{0, 0};

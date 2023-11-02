@@ -11,13 +11,26 @@
 #include "envoy/common/interval_set.h"
 #include "envoy/common/time.h"
 
-#include "common/common/assert.h"
-#include "common/common/hash.h"
-#include "common/common/non_copyable.h"
+#include "source/common/common/assert.h"
+#include "source/common/common/hash.h"
+#include "source/common/common/non_copyable.h"
 
+#include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/strings/string_view.h"
 
 namespace Envoy {
+
+/**
+ * Converts a `timespec` structure to a `std::chrono::time_point` aka. `Envoy::SystemTime`.
+ * @param t the `timespec`
+ * @return Envoy::SystemTime the same time, represented as a `std::chrono::time_point`,
+ *         to microsecond accuracy. (`SystemTime` does not accept nanosecond accuracy.)
+ */
+constexpr SystemTime timespecToChrono(const struct timespec& t) {
+  return SystemTime{} + std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::seconds{t.tv_sec} + std::chrono::nanoseconds{t.tv_nsec});
+}
 
 /**
  * Retrieve string description of error code
@@ -44,7 +57,7 @@ public:
    * @param time_source time keeping source.
    * @return std::string representing the GMT/UTC time of a TimeSource based on the format string.
    */
-  std::string now(TimeSource& time_source);
+  std::string now(TimeSource& time_source) const;
 
   /**
    * @return std::string the format string used.
@@ -56,7 +69,7 @@ private:
 
   using SpecifierOffsets = std::vector<int32_t>;
   std::string fromTimeAndPrepareSpecifierOffsets(time_t time, SpecifierOffsets& specifier_offsets,
-                                                 const std::string& seconds_str) const;
+                                                 const absl::string_view seconds_str) const;
 
   // A container to hold a specifiers (%f, %Nf, %s) found in a format string.
   struct Specifier {
@@ -237,7 +250,7 @@ public:
   using CaseUnorderedSet =
       absl::flat_hash_set<std::string, CaseInsensitiveHash, CaseInsensitiveCompare>;
 
-  static const char WhitespaceChars[];
+  static constexpr absl::string_view WhitespaceChars = " \t\f\v\n\r";
 
   /**
    * Convert a string to an unsigned long, checking for error.
@@ -404,7 +417,7 @@ public:
    * @param source supplies the string to escape.
    * @return escaped string.
    */
-  static std::string escape(const std::string& source);
+  static std::string escape(const absl::string_view source);
 
   /**
    * Outputs the string to the provided ostream, while escaping \n, \r, \t, and "
@@ -440,6 +453,21 @@ public:
    */
   static std::string removeCharacters(const absl::string_view& str,
                                       const IntervalSet<size_t>& remove_characters);
+
+  /**
+   * Check whether a string contains empty characters or space (' ', '\t', '\f', '\v', '\n', '\r').
+   * @param view string.
+   * @return true if string contains ' ', '\t', '\f', '\v', '\n', '\r'.
+   */
+  static bool hasEmptySpace(absl::string_view view);
+
+  /**
+   * Replace all empty characters or space (' ', '\t', '\f', '\v', '\n', '\r') in the string with
+   * '_'.
+   * @param view string.
+   * @return std::string the string after replaced all empty characters or space.
+   */
+  static std::string replaceAllEmptySpace(absl::string_view view);
 };
 
 /**
@@ -499,7 +527,7 @@ public:
       begin = end;
     }
 
-    NOT_REACHED_GCOVR_EXCL_LINE;
+    PANIC("unexpectedly reached");
   }
 };
 
@@ -542,6 +570,11 @@ public:
       }
     }
     intervals_.insert(Interval(left, right));
+  }
+
+  bool test(Value value) const override {
+    const auto left_pos = intervals_.lower_bound(Interval(value, value + 1));
+    return left_pos != intervals_.end() && value >= left_pos->first && value < left_pos->second;
   }
 
   std::vector<Interval> toVector() const override {
@@ -770,7 +803,7 @@ public:
   /**
    * @return a std::string copy of the InlineString.
    */
-  std::string toString() const { return std::string(data_, size_); }
+  std::string toString() const { return {data_, size_}; }
 
   /**
    * @return a string_view into the InlineString.
@@ -795,7 +828,7 @@ public:
                             absl::flat_hash_set<T>& result_set) {
     std::copy_if(original_set.begin(), original_set.end(),
                  std::inserter(result_set, result_set.begin()),
-                 [&remove_set](const T& v) -> bool { return remove_set.count(v) == 0; });
+                 [&remove_set](const T& v) -> bool { return !remove_set.contains(v); });
   }
 };
 

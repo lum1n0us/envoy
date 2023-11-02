@@ -9,9 +9,8 @@
 #include "envoy/network/filter.h"
 #include "envoy/server/filter_config.h"
 
-#include "common/buffer/buffer_impl.h"
-
-#include "extensions/filters/network/common/factory_base.h"
+#include "source/common/buffer/buffer_impl.h"
+#include "source/extensions/filters/network/common/factory_base.h"
 
 #include "test/integration/filter_manager_integration_test.pb.h"
 #include "test/integration/filter_manager_integration_test.pb.validate.h"
@@ -290,12 +289,12 @@ const char inject_data_inside_callback_filter[] = "inject-data-inside-filter-cal
 const char no_inject_data[] = "no-inject-data";
 
 // List of auxiliary filters to test against
-const std::vector<std::string> auxiliary_filters() {
+const std::vector<std::string> auxiliaryFilters() {
   return {inject_data_outside_callback_filter, inject_data_inside_callback_filter, no_inject_data};
 }
 
 // Used to pretty print test parameters
-const std::regex invalid_param_name_regex() { return std::regex{"[^a-zA-Z0-9_]"}; }
+const std::regex invalidParamNameRegex() { return std::regex{"[^a-zA-Z0-9_]"}; }
 
 /**
  * Integration test with one of auxiliary filters (listed above)
@@ -403,7 +402,7 @@ public:
         "{}_{}",
         TestUtility::ipTestParamsToString(testing::TestParamInfo<Network::Address::IpVersion>(
             std::get<0>(params.param), params.index)),
-        std::regex_replace(std::get<1>(params.param), invalid_param_name_regex(), "_"));
+        std::regex_replace(std::get<1>(params.param), invalidParamNameRegex(), "_"));
   }
 
   explicit InjectDataToFilterChainIntegrationTest(const std::string& config)
@@ -421,7 +420,10 @@ protected:
         tick_interval_ms: 1
         max_chunk_length: 5
     )EOF"
-                                                                        : "";
+                                                                        : R"EOF(
+      typed_config:
+        "@type": type.googleapis.com/google.protobuf.Struct
+    )EOF";
   }
 };
 
@@ -435,6 +437,8 @@ public:
     filter_chains:
       filters:
       - name: envoy.filters.network.echo
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.echo.v3.Echo
       )EOF");
   }
 
@@ -445,7 +449,7 @@ public:
 INSTANTIATE_TEST_SUITE_P(
     Params, InjectDataWithEchoFilterIntegrationTest,
     testing::Combine(testing::ValuesIn(TestEnvironment::getIpVersionsForTest()),
-                     testing::ValuesIn(auxiliary_filters())),
+                     testing::ValuesIn(auxiliaryFilters())),
     InjectDataToFilterChainIntegrationTest::testParamsToString);
 
 TEST_P(InjectDataWithEchoFilterIntegrationTest, UsageOfInjectDataMethodsShouldBeUnnoticeable) {
@@ -491,7 +495,7 @@ public:
 INSTANTIATE_TEST_SUITE_P(
     Params, InjectDataWithTcpProxyFilterIntegrationTest,
     testing::Combine(testing::ValuesIn(TestEnvironment::getIpVersionsForTest()),
-                     testing::ValuesIn(auxiliary_filters())),
+                     testing::ValuesIn(auxiliaryFilters())),
     InjectDataToFilterChainIntegrationTest::testParamsToString);
 
 TEST_P(InjectDataWithTcpProxyFilterIntegrationTest, UsageOfInjectDataMethodsShouldBeUnnoticeable) {
@@ -582,7 +586,7 @@ TEST_P(FilterChainAccessLogTest, FilterChainName) {
  */
 class InjectDataWithHttpConnectionManagerIntegrationTest
     : public testing::TestWithParam<
-          std::tuple<Network::Address::IpVersion, Http::CodecClient::Type, std::string>>,
+          std::tuple<Network::Address::IpVersion, Http::CodecType, std::string>>,
       public HttpIntegrationTest,
       public TestWithAuxiliaryFilter {
 public:
@@ -590,13 +594,13 @@ public:
   // FooTestCase.BarInstance/IPv4_Http_no_inject_data
   static std::string testParamsToString(
       const testing::TestParamInfo<
-          std::tuple<Network::Address::IpVersion, Http::CodecClient::Type, std::string>>& params) {
+          std::tuple<Network::Address::IpVersion, Http::CodecType, std::string>>& params) {
     return fmt::format(
         "{}_{}_{}",
         TestUtility::ipTestParamsToString(testing::TestParamInfo<Network::Address::IpVersion>(
             std::get<0>(params.param), params.index)),
-        (std::get<1>(params.param) == Http::CodecClient::Type::HTTP2 ? "Http2" : "Http"),
-        std::regex_replace(std::get<2>(params.param), invalid_param_name_regex(), "_"));
+        (std::get<1>(params.param) == Http::CodecType::HTTP2 ? "Http2" : "Http"),
+        std::regex_replace(std::get<2>(params.param), invalidParamNameRegex(), "_"));
   }
 
   InjectDataWithHttpConnectionManagerIntegrationTest()
@@ -618,16 +622,18 @@ protected:
         tick_interval_ms: 1
         max_chunk_length: 10
     )EOF"
-                                                                        : "";
+                                                                        : R"EOF(
+      typed_config:
+        "@type": type.googleapis.com/google.protobuf.Struct
+    )EOF";
   }
 };
 
 INSTANTIATE_TEST_SUITE_P(
     Params, InjectDataWithHttpConnectionManagerIntegrationTest,
     testing::Combine(testing::ValuesIn(TestEnvironment::getIpVersionsForTest()),
-                     testing::Values(Http::CodecClient::Type::HTTP1,
-                                     Http::CodecClient::Type::HTTP2),
-                     testing::ValuesIn(auxiliary_filters())),
+                     testing::Values(Http::CodecType::HTTP1, Http::CodecType::HTTP2),
+                     testing::ValuesIn(auxiliaryFilters())),
     InjectDataWithHttpConnectionManagerIntegrationTest::testParamsToString);
 
 TEST_P(InjectDataWithHttpConnectionManagerIntegrationTest,
@@ -648,7 +654,7 @@ TEST_P(InjectDataWithHttpConnectionManagerIntegrationTest,
   Buffer::OwnedImpl response_data{"greetings"};
   upstream_request_->encodeData(response_data, true);
 
-  response->waitForEndStream();
+  ASSERT_TRUE(response->waitForEndStream());
   ASSERT_TRUE(response->complete());
   EXPECT_EQ("200", response->headers().getStatusValue());
   EXPECT_EQ("greetings", response->body());

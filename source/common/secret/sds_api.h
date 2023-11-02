@@ -19,14 +19,14 @@
 #include "envoy/stats/stats.h"
 #include "envoy/upstream/cluster_manager.h"
 
-#include "common/common/callback_impl.h"
-#include "common/common/cleanup.h"
-#include "common/config/subscription_base.h"
-#include "common/config/utility.h"
-#include "common/config/watched_directory.h"
-#include "common/init/target_impl.h"
-#include "common/ssl/certificate_validation_context_config_impl.h"
-#include "common/ssl/tls_certificate_config_impl.h"
+#include "source/common/common/callback_impl.h"
+#include "source/common/common/cleanup.h"
+#include "source/common/config/subscription_base.h"
+#include "source/common/config/utility.h"
+#include "source/common/config/watched_directory.h"
+#include "source/common/init/target_impl.h"
+#include "source/common/ssl/certificate_validation_context_config_impl.h"
+#include "source/common/ssl/tls_certificate_config_impl.h"
 
 namespace Envoy {
 namespace Secret {
@@ -74,11 +74,11 @@ protected:
   Common::CallbackManager<> update_callback_manager_;
 
   // Config::SubscriptionCallbacks
-  void onConfigUpdate(const std::vector<Config::DecodedResourceRef>& resources,
-                      const std::string& version_info) override;
-  void onConfigUpdate(const std::vector<Config::DecodedResourceRef>& added_resources,
-                      const Protobuf::RepeatedPtrField<std::string>& removed_resources,
-                      const std::string& system_version_info) override;
+  absl::Status onConfigUpdate(const std::vector<Config::DecodedResourceRef>& resources,
+                              const std::string& version_info) override;
+  absl::Status onConfigUpdate(const std::vector<Config::DecodedResourceRef>& added_resources,
+                              const Protobuf::RepeatedPtrField<std::string>& removed_resources,
+                              const std::string& system_version_info) override;
   void onConfigUpdateFailed(Envoy::Config::ConfigUpdateFailureReason reason,
                             const EnvoyException* e) override;
   virtual std::vector<std::string> getDataSourceFilenames() PURE;
@@ -92,7 +92,7 @@ protected:
   Api::Api& api_;
 
 private:
-  void validateUpdateSize(int num_resources);
+  absl::Status validateUpdateSize(int num_resources);
   void initialize();
   FileContentMap loadFiles();
   uint64_t getHashForFiles(const FileContentMap& files);
@@ -100,14 +100,14 @@ private:
   void onWatchUpdate();
   SdsApiStats generateStats(Stats::Scope& scope);
 
-  Stats::ScopePtr scope_;
+  Stats::ScopeSharedPtr scope_;
   SdsApiStats sds_api_stats_;
 
   const envoy::config::core::v3::ConfigSource sds_config_;
   Config::SubscriptionPtr subscription_;
   const std::string sds_config_name_;
 
-  uint64_t secret_hash_;
+  uint64_t secret_hash_{0};
   uint64_t files_hash_;
   Cleanup clean_up_;
   Config::SubscriptionFactory& subscription_factory_;
@@ -137,12 +137,13 @@ public:
          const std::string& sds_config_name, std::function<void()> destructor_cb) {
     // We need to do this early as we invoke the subscription factory during initialization, which
     // is too late to throw.
-    Config::Utility::checkLocalInfo("TlsCertificateSdsApi", secret_provider_context.localInfo());
+    auto& server_context = secret_provider_context.serverFactoryContext();
+    Config::Utility::checkLocalInfo("TlsCertificateSdsApi", server_context.localInfo());
     return std::make_shared<TlsCertificateSdsApi>(
         sds_config, sds_config_name, secret_provider_context.clusterManager().subscriptionFactory(),
-        secret_provider_context.dispatcher().timeSource(),
-        secret_provider_context.messageValidationVisitor(), secret_provider_context.stats(),
-        destructor_cb, secret_provider_context.dispatcher(), secret_provider_context.api());
+        server_context.mainThreadDispatcher().timeSource(),
+        secret_provider_context.messageValidationVisitor(), server_context.serverScope().store(),
+        destructor_cb, server_context.mainThreadDispatcher(), server_context.api());
   }
 
   TlsCertificateSdsApi(const envoy::config::core::v3::ConfigSource& sds_config,
@@ -191,7 +192,9 @@ protected:
             *sds_tls_certificate_secrets_);
     // We replace path based secrets with inlined secrets on update.
     resolveDataSource(files, *resolved_tls_certificate_secrets_->mutable_certificate_chain());
-    resolveDataSource(files, *resolved_tls_certificate_secrets_->mutable_private_key());
+    if (sds_tls_certificate_secrets_->has_private_key()) {
+      resolveDataSource(files, *resolved_tls_certificate_secrets_->mutable_private_key());
+    }
   }
   void validateConfig(const envoy::extensions::transport_sockets::tls::v3::Secret&) override {}
   std::vector<std::string> getDataSourceFilenames() override;
@@ -220,13 +223,14 @@ public:
          const std::string& sds_config_name, std::function<void()> destructor_cb) {
     // We need to do this early as we invoke the subscription factory during initialization, which
     // is too late to throw.
+    auto& server_context = secret_provider_context.serverFactoryContext();
     Config::Utility::checkLocalInfo("CertificateValidationContextSdsApi",
-                                    secret_provider_context.localInfo());
+                                    server_context.localInfo());
     return std::make_shared<CertificateValidationContextSdsApi>(
         sds_config, sds_config_name, secret_provider_context.clusterManager().subscriptionFactory(),
-        secret_provider_context.dispatcher().timeSource(),
-        secret_provider_context.messageValidationVisitor(), secret_provider_context.stats(),
-        destructor_cb, secret_provider_context.dispatcher(), secret_provider_context.api());
+        server_context.mainThreadDispatcher().timeSource(),
+        secret_provider_context.messageValidationVisitor(), server_context.serverScope().store(),
+        destructor_cb, server_context.mainThreadDispatcher(), server_context.api());
   }
   CertificateValidationContextSdsApi(const envoy::config::core::v3::ConfigSource& sds_config,
                                      const std::string& sds_config_name,
@@ -280,6 +284,9 @@ protected:
     // We replace path based secrets with inlined secrets on update.
     resolveDataSource(files,
                       *resolved_certificate_validation_context_secrets_->mutable_trusted_ca());
+    if (sds_certificate_validation_context_secrets_->has_crl()) {
+      resolveDataSource(files, *resolved_certificate_validation_context_secrets_->mutable_crl());
+    }
   }
 
   void
@@ -314,13 +321,13 @@ public:
          const std::string& sds_config_name, std::function<void()> destructor_cb) {
     // We need to do this early as we invoke the subscription factory during initialization, which
     // is too late to throw.
-    Config::Utility::checkLocalInfo("TlsSessionTicketKeysSdsApi",
-                                    secret_provider_context.localInfo());
+    auto& server_context = secret_provider_context.serverFactoryContext();
+    Config::Utility::checkLocalInfo("TlsSessionTicketKeysSdsApi", server_context.localInfo());
     return std::make_shared<TlsSessionTicketKeysSdsApi>(
         sds_config, sds_config_name, secret_provider_context.clusterManager().subscriptionFactory(),
-        secret_provider_context.dispatcher().timeSource(),
-        secret_provider_context.messageValidationVisitor(), secret_provider_context.stats(),
-        destructor_cb, secret_provider_context.dispatcher(), secret_provider_context.api());
+        server_context.mainThreadDispatcher().timeSource(),
+        secret_provider_context.messageValidationVisitor(), server_context.serverScope().store(),
+        destructor_cb, server_context.mainThreadDispatcher(), server_context.api());
   }
 
   TlsSessionTicketKeysSdsApi(const envoy::config::core::v3::ConfigSource& sds_config,
@@ -387,12 +394,13 @@ public:
          const std::string& sds_config_name, std::function<void()> destructor_cb) {
     // We need to do this early as we invoke the subscription factory during initialization, which
     // is too late to throw.
-    Config::Utility::checkLocalInfo("GenericSecretSdsApi", secret_provider_context.localInfo());
+    auto& server_context = secret_provider_context.serverFactoryContext();
+    Config::Utility::checkLocalInfo("GenericSecretSdsApi", server_context.localInfo());
     return std::make_shared<GenericSecretSdsApi>(
         sds_config, sds_config_name, secret_provider_context.clusterManager().subscriptionFactory(),
-        secret_provider_context.dispatcher().timeSource(),
-        secret_provider_context.messageValidationVisitor(), secret_provider_context.stats(),
-        destructor_cb, secret_provider_context.dispatcher(), secret_provider_context.api());
+        server_context.mainThreadDispatcher().timeSource(),
+        secret_provider_context.messageValidationVisitor(), server_context.serverScope().store(),
+        destructor_cb, server_context.mainThreadDispatcher(), server_context.api());
   }
 
   GenericSecretSdsApi(const envoy::config::core::v3::ConfigSource& sds_config,

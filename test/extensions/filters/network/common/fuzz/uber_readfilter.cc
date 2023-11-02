@@ -1,14 +1,19 @@
 #include "test/extensions/filters/network/common/fuzz/uber_readfilter.h"
 
-#include "common/config/utility.h"
-#include "common/config/version_converter.h"
-#include "common/network/address_impl.h"
+#include "source/common/config/utility.h"
+#include "source/common/network/address_impl.h"
 
 using testing::Return;
 
 namespace Envoy {
 namespace Extensions {
 namespace NetworkFilters {
+namespace {
+
+const char kLocalCloseReason[] = "fuzz_local_close_reason";
+
+} //  namespace
+
 void UberFilterFuzzer::reset() {
   // Reset some changes made by current filter on some mock objects.
 
@@ -42,6 +47,8 @@ void UberFilterFuzzer::fuzzerSetup() {
         read_filter_ = read_filter;
         read_filter_->initializeReadFilterCallbacks(*read_filter_callbacks_);
       }));
+  ON_CALL(read_filter_callbacks_->connection_, localCloseReason())
+      .WillByDefault(Return(kLocalCloseReason));
 
   // Prepare sni for sni_cluster filter and sni_dynamic_forward_proxy filter.
   ON_CALL(read_filter_callbacks_->connection_, requestedServerName())
@@ -116,6 +123,11 @@ void UberFilterFuzzer::fuzz(
       ASSERT(read_filter_ != nullptr);
       Buffer::OwnedImpl buffer(action.on_data().data());
       read_filter_->onData(buffer, action.on_data().end_stream());
+      if (read_filter_callbacks_->connection_.state_ != Envoy::Network::Connection::State::Open) {
+        ENVOY_LOG_MISC(trace, "Connection closed after data processing.");
+        reset();
+        return;
+      }
 
       break;
     }
@@ -128,7 +140,7 @@ void UberFilterFuzzer::fuzz(
     case test::extensions::filters::network::Action::kAdvanceTime: {
       time_source_.advanceTimeAndRun(
           std::chrono::milliseconds(action.advance_time().milliseconds()),
-          factory_context_.dispatcher(), Event::Dispatcher::RunType::NonBlock);
+          factory_context_.mainThreadDispatcher(), Event::Dispatcher::RunType::NonBlock);
       break;
     }
     default: {

@@ -5,8 +5,8 @@
 
 #include "envoy/common/scope_tracker.h"
 
-#include "common/signal/fatal_error_handler.h"
-#include "common/signal/signal_action.h"
+#include "source/common/signal/fatal_error_handler.h"
+#include "source/common/signal/signal_action.h"
 
 #include "test/common/stats/stat_test_utility.h"
 #include "test/test_common/utility.h"
@@ -15,6 +15,10 @@ namespace Envoy {
 #if defined(__has_feature)
 #if __has_feature(address_sanitizer)
 #define ASANITIZED /* Sanitized by Clang */
+#endif
+
+#if __has_feature(memory_sanitizer)
+#define MSANITIZED /* Sanitized by Clang */
 #endif
 #endif
 
@@ -71,7 +75,7 @@ public:
 // The sanitizer does its own special signal handling and prints messages that are
 // not ours instead of what this test expects. As of latest Clang this appears
 // to include abort() as well.
-#ifndef ASANITIZED
+#if !defined(ASANITIZED) && !defined(MSANITIZED)
 TEST(SignalsDeathTest, InvalidAddressDeathTest) {
   SignalAction actions;
   EXPECT_DEATH(

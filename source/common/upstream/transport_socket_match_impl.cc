@@ -1,10 +1,10 @@
-#include "common/upstream/transport_socket_match_impl.h"
+#include "source/common/upstream/transport_socket_match_impl.h"
 
 #include "envoy/config/cluster/v3/cluster.pb.h"
 #include "envoy/config/core/v3/base.pb.h"
 #include "envoy/server/transport_socket_config.h"
 
-#include "common/config/utility.h"
+#include "source/common/config/utility.h"
 
 namespace Envoy {
 namespace Upstream {
@@ -13,7 +13,7 @@ TransportSocketMatcherImpl::TransportSocketMatcherImpl(
     const Protobuf::RepeatedPtrField<envoy::config::cluster::v3::Cluster::TransportSocketMatch>&
         socket_matches,
     Server::Configuration::TransportSocketFactoryContext& factory_context,
-    Network::TransportSocketFactoryPtr& default_factory, Stats::Scope& stats_scope)
+    Network::UpstreamTransportSocketFactoryPtr& default_factory, Stats::Scope& stats_scope)
     : stats_scope_(stats_scope),
       default_match_("default", std::move(default_factory), generateStats("default")) {
   for (const auto& socket_match : socket_matches) {
@@ -42,10 +42,10 @@ TransportSocketMatcherImpl::resolve(const envoy::config::core::v3::Metadata* met
     if (Config::Metadata::metadataLabelMatch(
             match.label_set, metadata,
             Envoy::Config::MetadataFilters::get().ENVOY_TRANSPORT_SOCKET_MATCH, false)) {
-      return MatchData(*match.factory, match.stats, match.name);
+      return {*match.factory, match.stats, match.name};
     }
   }
-  return MatchData(*default_match_.factory, default_match_.stats, default_match_.name);
+  return {*default_match_.factory, default_match_.stats, default_match_.name};
 }
 
 } // namespace Upstream

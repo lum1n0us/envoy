@@ -11,31 +11,39 @@ namespace RequestId {
 
 // UUIDRequestIDExtension is the default implementation if no other extension is explicitly
 // configured.
-class UUIDRequestIDExtension : public Http::RequestIDExtension {
+class UUIDRequestIDExtension : public Envoy::Http::RequestIDExtension {
 public:
   UUIDRequestIDExtension(const envoy::extensions::request_id::uuid::v3::UuidRequestIdConfig& config,
                          Random::RandomGenerator& random)
       : random_(random),
-        pack_trace_reason_(PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, pack_trace_reason, true)) {}
+        pack_trace_reason_(PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, pack_trace_reason, true)),
+        use_request_id_for_trace_sampling_(
+            PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, use_request_id_for_trace_sampling, true)) {}
 
-  static Http::RequestIDExtensionSharedPtr defaultInstance(Random::RandomGenerator& random) {
+  static Envoy::Http::RequestIDExtensionSharedPtr defaultInstance(Random::RandomGenerator& random) {
     return std::make_shared<UUIDRequestIDExtension>(
         envoy::extensions::request_id::uuid::v3::UuidRequestIdConfig(), random);
   }
 
   bool packTraceReason() { return pack_trace_reason_; }
 
-  // Http::RequestIDExtension
-  void set(Http::RequestHeaderMap& request_headers, bool force) override;
-  void setInResponse(Http::ResponseHeaderMap& response_headers,
-                     const Http::RequestHeaderMap& request_headers) override;
-  absl::optional<uint64_t> toInteger(const Http::RequestHeaderMap& request_headers) const override;
-  Tracing::Reason getTraceReason(const Http::RequestHeaderMap& request_headers) override;
-  void setTraceReason(Http::RequestHeaderMap& request_headers, Tracing::Reason status) override;
+  // Envoy::Http::RequestIDExtension
+  void set(Envoy::Http::RequestHeaderMap& request_headers, bool force) override;
+  void setInResponse(Envoy::Http::ResponseHeaderMap& response_headers,
+                     const Envoy::Http::RequestHeaderMap& request_headers) override;
+  absl::optional<absl::string_view>
+  get(const Envoy::Http::RequestHeaderMap& request_headers) const override;
+  absl::optional<uint64_t>
+  getInteger(const Envoy::Http::RequestHeaderMap& request_headers) const override;
+  Tracing::Reason getTraceReason(const Envoy::Http::RequestHeaderMap& request_headers) override;
+  void setTraceReason(Envoy::Http::RequestHeaderMap& request_headers,
+                      Tracing::Reason status) override;
+  bool useRequestIdForTraceSampling() const override { return use_request_id_for_trace_sampling_; }
 
 private:
   Envoy::Random::RandomGenerator& random_;
   const bool pack_trace_reason_;
+  const bool use_request_id_for_trace_sampling_;
 
   // Byte on this position has predefined value of 4 for UUID4.
   static const int TRACE_BYTE_POSITION = 14;
@@ -63,9 +71,9 @@ public:
   ProtobufTypes::MessagePtr createEmptyConfigProto() override {
     return std::make_unique<envoy::extensions::request_id::uuid::v3::UuidRequestIdConfig>();
   }
-  Http::RequestIDExtensionSharedPtr
+  Envoy::Http::RequestIDExtensionSharedPtr
   createExtensionInstance(const Protobuf::Message& config,
-                          Server::Configuration::FactoryContext& context) override {
+                          Server::Configuration::CommonFactoryContext& context) override {
     return std::make_shared<UUIDRequestIDExtension>(
         MessageUtil::downcastAndValidate<
             const envoy::extensions::request_id::uuid::v3::UuidRequestIdConfig&>(
@@ -73,6 +81,8 @@ public:
         context.api().randomGenerator());
   }
 };
+
+DECLARE_FACTORY(UUIDRequestIDExtensionFactory);
 
 } // namespace RequestId
 } // namespace Extensions

@@ -1,29 +1,27 @@
-version: '3.7'
 services:
+
+  envoy:
+    build:
+      context: .
+      dockerfile: ../shared/envoy/Dockerfile
+    ports:
+    - "${PORT_PROXY0:-80}-${PORT_PROXY1:-81}:80"
+    - "${PORT_ADMIN:-8081}:8081"
+    depends_on:
+      http_service:
+        condition: service_healthy
+      lrs_server:
+        condition: service_started
 
   http_service:
     build:
-      context: .
-      dockerfile: Dockerfile-http-server
-    volumes:
-      - ./service-envoy-w-lrs.yaml:/etc/service-envoy-w-lrs.yaml
-    environment:
-      ENVOY_UID: 0
-    networks:
-      - envoymesh
-    ports:
-      - "80-81:80"
+      context: ../shared/python
+      target: aiohttp-tracing-service
 
   lrs_server:
     build:
       context: .
-      dockerfile: Dockerfile-lrs
-    networks:
-      - envoymesh
+      dockerfile: ../shared/golang/Dockerfile
+      target: golang-lrs
     volumes:
-      - /go/src/github.com/envoyproxy/envoy/examples/load-reporting-service
-    ports:
-      - "18000:18000"
-
-networks:
-  envoymesh: {}
+    - /go/src/github.com/envoyproxy/envoy/examples/load-reporting-service

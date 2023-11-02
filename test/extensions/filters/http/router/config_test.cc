@@ -4,7 +4,7 @@
 #include "envoy/extensions/filters/http/router/v3/router.pb.validate.h"
 #include "envoy/registry/registry.h"
 
-#include "extensions/filters/http/router/config.h"
+#include "source/extensions/filters/http/router/config.h"
 
 #include "test/mocks/server/factory_context.h"
 #include "test/test_common/utility.h"
@@ -23,11 +23,26 @@ namespace {
 TEST(RouterFilterConfigTest, SimpleRouterFilterConfig) {
   const std::string yaml_string = R"EOF(
   dynamic_stats: true
+  )EOF";
+
+  envoy::extensions::filters::http::router::v3::Router proto_config;
+  TestUtility::loadFromYaml(yaml_string, proto_config);
+  NiceMock<Server::Configuration::MockFactoryContext> context;
+  RouterFilterConfig factory;
+  Http::FilterFactoryCb cb = factory.createFilterFactoryFromProto(proto_config, "stats.", context);
+  Http::MockFilterChainFactoryCallbacks filter_callback;
+  EXPECT_CALL(filter_callback, addStreamDecoderFilter(_));
+  cb(filter_callback);
+}
+
+TEST(RouterFilterConfigTest, DEPRECATED_FEATURE_TEST(SimpleRouterFilterConfigWithChildSpan)) {
+  const std::string yaml_string = R"EOF(
+  dynamic_stats: true
   start_child_span: true
   )EOF";
 
   envoy::extensions::filters::http::router::v3::Router proto_config;
-  TestUtility::loadFromYaml(yaml_string, proto_config, false, true);
+  TestUtility::loadFromYaml(yaml_string, proto_config);
   NiceMock<Server::Configuration::MockFactoryContext> context;
   RouterFilterConfig factory;
   Http::FilterFactoryCb cb = factory.createFilterFactoryFromProto(proto_config, "stats.", context);
@@ -43,8 +58,7 @@ TEST(RouterFilterConfigTest, BadRouterFilterConfig) {
   )EOF";
 
   envoy::extensions::filters::http::router::v3::Router proto_config;
-  EXPECT_THROW_WITH_REGEX(TestUtility::loadFromYaml(yaml_string, proto_config, false, true),
-                          EnvoyException, "route: Cannot find field");
+  EXPECT_THROW(TestUtility::loadFromYaml(yaml_string, proto_config), EnvoyException);
 }
 
 TEST(RouterFilterConfigTest, RouterFilterWithUnsupportedStrictHeaderCheck) {
@@ -54,7 +68,7 @@ TEST(RouterFilterConfigTest, RouterFilterWithUnsupportedStrictHeaderCheck) {
   )EOF";
 
   envoy::extensions::filters::http::router::v3::Router router_config;
-  TestUtility::loadFromYaml(yaml, router_config, false, true);
+  TestUtility::loadFromYaml(yaml, router_config);
 
   NiceMock<Server::Configuration::MockFactoryContext> context;
   RouterFilterConfig factory;
@@ -84,16 +98,6 @@ TEST(RouterFilterConfigTest, RouterFilterWithEmptyProtoConfig) {
   Http::MockFilterChainFactoryCallbacks filter_callback;
   EXPECT_CALL(filter_callback, addStreamDecoderFilter(_));
   cb(filter_callback);
-}
-
-// Test that the deprecated extension name still functions.
-TEST(RouterFilterConfigTest, DEPRECATED_FEATURE_TEST(DeprecatedExtensionFilterName)) {
-  const std::string deprecated_name = "envoy.router";
-
-  ASSERT_NE(
-      nullptr,
-      Registry::FactoryRegistry<Server::Configuration::NamedHttpFilterConfigFactory>::getFactory(
-          deprecated_name));
 }
 
 } // namespace

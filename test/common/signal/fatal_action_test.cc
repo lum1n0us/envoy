@@ -3,8 +3,8 @@
 #include "envoy/common/scope_tracker.h"
 #include "envoy/server/fatal_action_config.h"
 
-#include "common/signal/fatal_action.h"
-#include "common/signal/fatal_error_handler.h"
+#include "source/common/signal/fatal_action.h"
+#include "source/common/signal/fatal_error_handler.h"
 
 #include "test/mocks/server/instance.h"
 #include "test/test_common/utility.h"
@@ -70,13 +70,6 @@ TEST_F(FatalActionTest, ShouldNotBeAbleToRunActionsBeforeRegistration) {
   // Call the actions
   EXPECT_EQ(FatalErrorHandler::runSafeActions(), Status::ActionManagerUnset);
   EXPECT_EQ(FatalErrorHandler::runUnsafeActions(), Status::ActionManagerUnset);
-}
-
-TEST_F(FatalActionTest, ShouldOnlyBeAbleToRegisterFatalActionsOnce) {
-  // Register empty list of actions
-  FatalErrorHandler::registerFatalActions({}, {}, Thread::threadFactoryForTest());
-  EXPECT_DEBUG_DEATH(
-      { FatalErrorHandler::registerFatalActions({}, {}, Thread::threadFactoryForTest()); }, "");
 }
 
 TEST_F(FatalActionTest, CanCallRegisteredActions) {

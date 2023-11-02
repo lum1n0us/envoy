@@ -7,11 +7,10 @@
 #include "envoy/upstream/cluster_manager.h"
 #include "envoy/upstream/host_description.h"
 
-#include "common/http/header_map_impl.h"
-#include "common/router/router.h"
-#include "common/router/upstream_request.h"
-
-#include "extensions/upstreams/http/http/upstream_request.h"
+#include "source/common/http/header_map_impl.h"
+#include "source/common/router/router.h"
+#include "source/common/router/upstream_request.h"
+#include "source/extensions/upstreams/http/http/upstream_request.h"
 
 namespace Envoy {
 
@@ -29,11 +28,12 @@ namespace {
 void addHeader(Envoy::Http::RequestHeaderMap& header_map, absl::string_view header_name,
                const envoy::config::core::v3::Metadata& metadata, absl::string_view key1,
                absl::string_view key2) {
-  if (auto filter_metadata = metadata.filter_metadata().find(key1);
+  if (auto filter_metadata = metadata.filter_metadata().find(std::string(key1));
       filter_metadata != metadata.filter_metadata().end()) {
     const ProtobufWkt::Struct& data_struct = filter_metadata->second;
     const auto& fields = data_struct.fields();
-    if (auto iter = fields.find(key2); iter != fields.end()) {
+    if (auto iter = fields.find(toStdStringView(key2)); // NOLINT(std::string_view)
+        iter != fields.end()) {
       if (iter->second.kind_case() == ProtobufWkt::Value::kStringValue) {
         header_map.setCopy(Envoy::Http::LowerCaseString(std::string(header_name)),
                            iter->second.string_value());
@@ -70,20 +70,20 @@ private:
 
 class PerHostHttpConnPool : public Extensions::Upstreams::Http::Http::HttpConnPool {
 public:
-  PerHostHttpConnPool(Upstream::ThreadLocalCluster& thread_local_cluster, bool is_connect,
+  PerHostHttpConnPool(Upstream::ThreadLocalCluster& thread_local_cluster,
                       const Router::RouteEntry& route_entry,
                       absl::optional<Envoy::Http::Protocol> downstream_protocol,
                       Upstream::LoadBalancerContext* ctx)
-      : HttpConnPool(thread_local_cluster, is_connect, route_entry, downstream_protocol, ctx) {}
+      : HttpConnPool(thread_local_cluster, route_entry, downstream_protocol, ctx) {}
 
   void onPoolReady(Envoy::Http::RequestEncoder& callbacks_encoder,
-                   Upstream::HostDescriptionConstSharedPtr host, const StreamInfo::StreamInfo& info,
+                   Upstream::HostDescriptionConstSharedPtr host, StreamInfo::StreamInfo& info,
                    absl::optional<Http::Protocol> protocol) override {
     conn_pool_stream_handle_ = nullptr;
     auto upstream = std::make_unique<PerHostHttpUpstream>(callbacks_->upstreamToDownstream(),
                                                           &callbacks_encoder, host);
     callbacks_->onPoolReady(std::move(upstream), host,
-                            callbacks_encoder.getStream().connectionLocalAddress(), info, protocol);
+                            callbacks_encoder.getStream().connectionInfoProvider(), info, protocol);
   }
 };
 
@@ -95,16 +95,17 @@ public:
   std::string name() const override { return "envoy.filters.connection_pools.http.per_host"; }
   std::string category() const override { return "envoy.upstreams"; }
   Router::GenericConnPoolPtr
-  createGenericConnPool(Upstream::ThreadLocalCluster& thread_local_cluster, bool is_connect,
+  createGenericConnPool(Upstream::ThreadLocalCluster& thread_local_cluster,
+                        Router::GenericConnPoolFactory::UpstreamProtocol upstream_protocol,
                         const Router::RouteEntry& route_entry,
                         absl::optional<Envoy::Http::Protocol> downstream_protocol,
                         Upstream::LoadBalancerContext* ctx) const override {
-    if (is_connect) {
-      // This example factory doesn't support terminating CONNECT stream.
+    if (upstream_protocol != UpstreamProtocol::HTTP) {
+      // This example factory doesn't support terminating CONNECT/CONNECT-UDP stream.
       return nullptr;
     }
     auto upstream_http_conn_pool = std::make_unique<PerHostHttpConnPool>(
-        thread_local_cluster, is_connect, route_entry, downstream_protocol, ctx);
+        thread_local_cluster, route_entry, downstream_protocol, ctx);
     return (upstream_http_conn_pool->valid() ? std::move(upstream_http_conn_pool) : nullptr);
   }
 

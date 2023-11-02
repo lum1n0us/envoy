@@ -1,9 +1,8 @@
 #include "envoy/extensions/filters/http/jwt_authn/v3/config.pb.h"
 
-#include "common/router/string_accessor_impl.h"
-#include "common/stream_info/filter_state_impl.h"
-
-#include "extensions/filters/http/jwt_authn/filter_config.h"
+#include "source/common/router/string_accessor_impl.h"
+#include "source/common/stream_info/filter_state_impl.h"
+#include "source/extensions/filters/http/jwt_authn/filter_config.h"
 
 #include "test/extensions/filters/http/jwt_authn/test_common.h"
 #include "test/mocks/server/factory_context.h"
@@ -14,6 +13,7 @@
 
 using envoy::extensions::filters::http::jwt_authn::v3::JwtAuthentication;
 using envoy::extensions::filters::http::jwt_authn::v3::PerRouteConfig;
+using testing::HasSubstr;
 using testing::ReturnRef;
 
 namespace Envoy {
@@ -40,7 +40,7 @@ rules:
   TestUtility::loadFromYaml(config, proto_config);
 
   NiceMock<Server::Configuration::MockFactoryContext> context;
-  auto filter_conf = FilterConfigImpl::create(proto_config, "", context);
+  auto filter_conf = std::make_unique<FilterConfigImpl>(proto_config, "", context);
 
   StreamInfo::FilterStateImpl filter_state(StreamInfo::FilterState::LifeSpan::FilterChain);
   EXPECT_TRUE(filter_conf->findVerifier(
@@ -74,7 +74,7 @@ rules:
   TestUtility::loadFromYaml(config, proto_config);
 
   NiceMock<Server::Configuration::MockFactoryContext> context;
-  auto filter_conf = FilterConfigImpl::create(proto_config, "", context);
+  auto filter_conf = std::make_unique<FilterConfigImpl>(proto_config, "", context);
 
   StreamInfo::FilterStateImpl filter_state(StreamInfo::FilterState::LifeSpan::FilterChain);
   EXPECT_TRUE(filter_conf->findVerifier(
@@ -104,7 +104,7 @@ requirement_map:
   TestUtility::loadFromYaml(config, proto_config);
 
   NiceMock<Server::Configuration::MockFactoryContext> context;
-  EXPECT_THROW_WITH_MESSAGE(FilterConfigImpl::create(proto_config, "", context), EnvoyException,
+  EXPECT_THROW_WITH_MESSAGE(FilterConfigImpl(proto_config, "", context), EnvoyException,
                             "Wrong requirement_name: rr. It should be one of [r1]");
 }
 
@@ -137,7 +137,7 @@ requirement_map:
   TestUtility::loadFromYaml(config, proto_config);
 
   NiceMock<Server::Configuration::MockFactoryContext> context;
-  auto filter_conf = FilterConfigImpl::create(proto_config, "", context);
+  auto filter_conf = std::make_unique<FilterConfigImpl>(proto_config, "", context);
   StreamInfo::FilterStateImpl filter_state(StreamInfo::FilterState::LifeSpan::FilterChain);
 
   EXPECT_TRUE(filter_conf->findVerifier(
@@ -176,13 +176,14 @@ rules:
     // The threadLocal, dispatcher and api that are used by the filter config, actually belong to
     // the server factory context that who's lifetime is longer. We simulate that by returning
     // their instances from outside the scope.
-    ON_CALL(context, dispatcher()).WillByDefault(ReturnRef(server_context.dispatcher()));
+    ON_CALL(context, mainThreadDispatcher())
+        .WillByDefault(ReturnRef(server_context.mainThreadDispatcher()));
     ON_CALL(context, api()).WillByDefault(ReturnRef(server_context.api()));
     ON_CALL(context, threadLocal()).WillByDefault(ReturnRef(server_context.threadLocal()));
 
     JwtAuthentication proto_config;
     TestUtility::loadFromYaml(config, proto_config);
-    auto filter_conf = FilterConfigImpl::create(proto_config, "", context);
+    auto filter_conf = std::make_unique<FilterConfigImpl>(proto_config, "", context);
   }
 
   // Even though filter_conf is now de-allocated, using a reference to it might still work, as its
@@ -222,7 +223,7 @@ filter_state_rules:
   TestUtility::loadFromYaml(config, proto_config);
 
   NiceMock<Server::Configuration::MockFactoryContext> context;
-  auto filter_conf = FilterConfigImpl::create(proto_config, "", context);
+  auto filter_conf = std::make_unique<FilterConfigImpl>(proto_config, "", context);
 
   // Empty filter_state
   StreamInfo::FilterStateImpl filter_state1(StreamInfo::FilterState::LifeSpan::FilterChain);
@@ -276,7 +277,7 @@ requirement_map:
   TestUtility::loadFromYaml(config, proto_config);
 
   NiceMock<Server::Configuration::MockFactoryContext> context;
-  auto filter_conf = FilterConfigImpl::create(proto_config, "", context);
+  auto filter_conf = std::make_unique<FilterConfigImpl>(proto_config, "", context);
 
   PerRouteConfig per_route;
   const Verifier* verifier;
@@ -309,6 +310,47 @@ requirement_map:
       filter_conf->findPerRouteVerifier(PerRouteFilterConfig(per_route));
   EXPECT_EQ(verifier, nullptr);
   EXPECT_EQ(error_msg, "Wrong requirement_name: wrong-name. It should be one of [r1,r2]");
+}
+
+TEST(HttpJwtAuthnFilterConfigTest, RemoteJwksDurationVeryBig) {
+  // remote_jwks.duration.seconds should be less than half of:
+  // 9223372036 = max_int64 / 1e9, which is about 300 years.
+  const char config[] = R"(
+providers:
+  provider1:
+    issuer: issuer1
+    remote_jwks:
+      cache_duration:
+        seconds: 5223372036
+)";
+
+  JwtAuthentication proto_config;
+  TestUtility::loadFromYaml(config, proto_config);
+
+  NiceMock<Server::Configuration::MockFactoryContext> context;
+  EXPECT_THAT_THROWS_MESSAGE(FilterConfigImpl(proto_config, "", context), EnvoyException,
+                             HasSubstr("Duration out-of-range"));
+}
+
+TEST(HttpJwtAuthnFilterConfigTest, RemoteJwksAsyncFetchRefetchDurationVeryBig) {
+  // failed_refetch_duration.duration.seconds should be less than:
+  // 9223372036 = max_int64 / 1e9, which is about 300 years.
+  const char config[] = R"(
+providers:
+  provider1:
+    issuer: issuer1
+    remote_jwks:
+      async_fetch:
+        failed_refetch_duration:
+          seconds: 9223372136
+)";
+
+  JwtAuthentication proto_config;
+  TestUtility::loadFromYaml(config, proto_config);
+
+  NiceMock<Server::Configuration::MockFactoryContext> context;
+  EXPECT_THAT_THROWS_MESSAGE(FilterConfigImpl(proto_config, "", context), EnvoyException,
+                             HasSubstr("Duration out-of-range"));
 }
 
 } // namespace

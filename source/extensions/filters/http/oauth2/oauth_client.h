@@ -8,11 +8,10 @@
 #include "envoy/http/message.h"
 #include "envoy/upstream/cluster_manager.h"
 
-#include "common/http/headers.h"
-#include "common/http/message_impl.h"
-#include "common/http/utility.h"
-
-#include "extensions/filters/http/oauth2/oauth.h"
+#include "source/common/http/headers.h"
+#include "source/common/http/message_impl.h"
+#include "source/common/http/utility.h"
+#include "source/extensions/filters/http/oauth2/oauth.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -27,7 +26,13 @@ namespace Oauth2 {
 class OAuth2Client : public Http::AsyncClient::Callbacks {
 public:
   virtual void asyncGetAccessToken(const std::string& auth_code, const std::string& client_id,
-                                   const std::string& secret, const std::string& cb_url) PURE;
+                                   const std::string& secret, const std::string& cb_url,
+                                   AuthType auth_type = AuthType::UrlEncodedBody) PURE;
+
+  virtual void asyncRefreshAccessToken(const std::string& refresh_token,
+                                       const std::string& client_id, const std::string& secret,
+                                       AuthType auth_type = AuthType::UrlEncodedBody) PURE;
+
   virtual void setCallbacks(FilterCallbacks& callbacks) PURE;
 
   // Http::AsyncClient::Callbacks
@@ -36,7 +41,7 @@ public:
                  Http::AsyncClient::FailureReason f) override PURE;
 };
 
-class OAuth2ClientImpl : public OAuth2Client, Logger::Loggable<Logger::Id::upstream> {
+class OAuth2ClientImpl : public OAuth2Client, Logger::Loggable<Logger::Id::oauth2> {
 public:
   OAuth2ClientImpl(Upstream::ClusterManager& cm, const envoy::config::core::v3::HttpUri& uri)
       : cm_(cm), uri_(uri) {}
@@ -52,13 +57,18 @@ public:
    * Request the access token from the OAuth server. Calls the `onSuccess` on `onFailure` callbacks.
    */
   void asyncGetAccessToken(const std::string& auth_code, const std::string& client_id,
-                           const std::string& secret, const std::string& cb_url) override;
+                           const std::string& secret, const std::string& cb_url,
+                           AuthType auth_type) override;
+
+  void asyncRefreshAccessToken(const std::string& refresh_token, const std::string& client_id,
+                               const std::string& secret, AuthType auth_type) override;
 
   void setCallbacks(FilterCallbacks& callbacks) override { parent_ = &callbacks; }
 
   // AsyncClient::Callbacks
   void onSuccess(const Http::AsyncClient::Request&, Http::ResponseMessagePtr&& m) override;
   void onFailure(const Http::AsyncClient::Request&, Http::AsyncClient::FailureReason f) override;
+
   void onBeforeFinalizeUpstreamSpan(Envoy::Tracing::Span&,
                                     const Http::ResponseHeaderMap*) override {}
 
@@ -74,7 +84,7 @@ private:
   // if the filter ends before the request completes.
   Http::AsyncClient::Request* in_flight_request_{nullptr};
 
-  enum class OAuthState { Idle, PendingAccessToken };
+  enum class OAuthState { Idle, PendingAccessToken, PendingAccessTokenByRefreshToken };
 
   // Due to the asynchronous nature of this functionality, it is helpful to have managed state which
   // is tracked here.

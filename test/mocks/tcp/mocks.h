@@ -15,6 +15,14 @@ namespace Envoy {
 namespace Tcp {
 namespace ConnectionPool {
 
+class MockCallbacks : public Callbacks {
+  MOCK_METHOD(void, onPoolFailure,
+              (PoolFailureReason reason, absl::string_view details,
+               Upstream::HostDescriptionConstSharedPtr host));
+  MOCK_METHOD(void, onPoolReady,
+              (ConnectionDataPtr && conn, Upstream::HostDescriptionConstSharedPtr host));
+};
+
 class MockUpstreamCallbacks : public UpstreamCallbacks {
 public:
   MockUpstreamCallbacks();
@@ -51,8 +59,9 @@ public:
   ~MockInstance() override;
 
   // Tcp::ConnectionPool::Instance
-  MOCK_METHOD(void, addDrainedCallback, (DrainedCb cb));
-  MOCK_METHOD(void, drainConnections, ());
+  MOCK_METHOD(void, addIdleCallback, (IdleCb cb));
+  MOCK_METHOD(bool, isIdle, (), (const));
+  MOCK_METHOD(void, drainConnections, (Envoy::ConnectionPool::DrainBehavior drain_behavior));
   MOCK_METHOD(void, closeConnections, ());
   MOCK_METHOD(Cancellable*, newConnection, (Tcp::ConnectionPool::Callbacks & callbacks));
   MOCK_METHOD(bool, maybePreconnect, (float), ());
@@ -67,6 +76,7 @@ public:
 
   std::list<NiceMock<Envoy::ConnectionPool::MockCancellable>> handles_;
   std::list<Callbacks*> callbacks_;
+  IdleCb idle_cb_;
 
   std::shared_ptr<NiceMock<Upstream::MockHostDescription>> host_{
       new NiceMock<Upstream::MockHostDescription>()};
@@ -75,5 +85,20 @@ public:
 };
 
 } // namespace ConnectionPool
+
+namespace AsyncClient {
+
+class MockAsyncTcpClientCallbacks : public AsyncTcpClientCallbacks {
+public:
+  MockAsyncTcpClientCallbacks() = default;
+  ~MockAsyncTcpClientCallbacks() override = default;
+
+  MOCK_METHOD(void, onData, (Buffer::Instance & data, bool end_stream));
+  MOCK_METHOD(void, onEvent, (Network::ConnectionEvent event));
+  MOCK_METHOD(void, onAboveWriteBufferHighWatermark, ());
+  MOCK_METHOD(void, onBelowWriteBufferLowWatermark, ());
+};
+
+} // namespace AsyncClient
 } // namespace Tcp
 } // namespace Envoy

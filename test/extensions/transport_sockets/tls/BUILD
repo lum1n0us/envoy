@@ -11,10 +11,15 @@ licenses(["notice"])  # Apache 2
 
 envoy_package()
 
+envoy_cc_test_library(
+    name = "ssl_certs_test_lib",
+    hdrs = ["ssl_certs_test.h"],
+)
+
 envoy_cc_test(
     name = "ssl_socket_test",
+    size = "large",
     srcs = [
-        "ssl_certs_test.h",
         "ssl_socket_test.cc",
     ],
     data = [
@@ -25,10 +30,10 @@ envoy_cc_test(
         "//test/extensions/transport_sockets/tls/test_data:certs",
     ],
     external_deps = ["ssl"],
-    shard_count = 4,
     deps = [
+        ":ssl_certs_test_lib",
         ":test_private_key_method_provider_test_lib",
-        "//include/envoy/network:transport_socket_interface",
+        "//envoy/network:transport_socket_interface",
         "//source/common/buffer:buffer_lib",
         "//source/common/common:empty_string",
         "//source/common/event:dispatcher_includes",
@@ -45,6 +50,7 @@ envoy_cc_test(
         "//source/extensions/transport_sockets/tls:ssl_socket_lib",
         "//source/extensions/transport_sockets/tls:utility_lib",
         "//source/extensions/transport_sockets/tls/private_key:private_key_manager_lib",
+        "//test/extensions/transport_sockets/tls/cert_validator:timed_cert_validator",
         "//test/extensions/transport_sockets/tls/test_data:cert_infos",
         "//test/mocks/buffer:buffer_mocks",
         "//test/mocks/init:init_mocks",
@@ -71,13 +77,13 @@ envoy_cc_test(
     name = "context_impl_test",
     srcs = [
         "context_impl_test.cc",
-        "ssl_certs_test.h",
     ],
     data = [
         "//test/extensions/transport_sockets/tls/ocsp/test_data:certs",
         "//test/extensions/transport_sockets/tls/test_data:certs",
     ],
     deps = [
+        "ssl_certs_test_lib",
         ":ssl_test_utils",
         "//source/common/common:base64_lib",
         "//source/common/json:json_loader_lib",
@@ -94,7 +100,6 @@ envoy_cc_test(
         "//test/mocks/ssl:ssl_mocks",
         "//test/test_common:environment_lib",
         "//test/test_common:simulated_time_system_lib",
-        "//test/test_common:test_runtime_lib",
         "@envoy_api//envoy/admin/v3:pkg_cc_proto",
         "@envoy_api//envoy/extensions/transport_sockets/tls/v3:pkg_cc_proto",
         "@envoy_api//envoy/type/matcher/v3:pkg_cc_proto",
@@ -132,7 +137,7 @@ envoy_cc_test(
 
 envoy_cc_test_library(
     name = "ssl_test_utils",
-    srcs = [
+    hdrs = [
         "ssl_test_utility.h",
     ],
     deps = [
@@ -151,11 +156,11 @@ envoy_cc_test_library(
     ],
     external_deps = ["ssl"],
     deps = [
-        "//include/envoy/api:api_interface",
-        "//include/envoy/event:dispatcher_interface",
-        "//include/envoy/server:transport_socket_config_interface",
-        "//include/envoy/ssl/private_key:private_key_config_interface",
-        "//include/envoy/ssl/private_key:private_key_interface",
+        "//envoy/api:api_interface",
+        "//envoy/event:dispatcher_interface",
+        "//envoy/server:transport_socket_config_interface",
+        "//envoy/ssl/private_key:private_key_config_interface",
+        "//envoy/ssl/private_key:private_key_interface",
         "//source/common/config:utility_lib",
         "//source/common/protobuf:utility_lib",
         "@envoy_api//envoy/extensions/transport_sockets/tls/v3:pkg_cc_proto",
@@ -200,6 +205,8 @@ envoy_cc_test(
         "//test/mocks/ssl:ssl_mocks",
         "//test/mocks/stats:stats_mocks",
         "//test/test_common:registry_lib",
+        "//test/test_common:test_runtime_lib",
+        "@envoy_api//envoy/extensions/transport_sockets/tls/v3:pkg_cc_proto",
     ],
 )
 

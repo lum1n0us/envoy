@@ -13,10 +13,11 @@ namespace Formatter {
 class CommandFormatterExtensionIntegrationTest : public testing::Test, public HttpIntegrationTest {
 public:
   CommandFormatterExtensionIntegrationTest()
-      : HttpIntegrationTest(Http::CodecClient::Type::HTTP1, Network::Address::IpVersion::v4) {}
+      : HttpIntegrationTest(Http::CodecType::HTTP1, Network::Address::IpVersion::v4) {}
 };
 
 TEST_F(CommandFormatterExtensionIntegrationTest, BasicExtension) {
+  autonomous_upstream_ = true;
   TestCommandFactory factory;
   Registry::InjectFactory<CommandParserFactory> command_register(factory);
   std::vector<envoy::config::core::v3::TypedExtensionConfig> formatters;

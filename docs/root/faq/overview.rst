@@ -36,6 +36,8 @@ Debugging
   debugging/why_is_envoy_404ing_connect_requests
   debugging/why_is_envoy_sending_413s
   debugging/why_is_my_route_not_found
+  debugging/xfp_vs_scheme
+  debugging/how_to_dump_heap_profile_of_envoy
 
 Performance
 -----------
@@ -81,3 +83,16 @@ Extensions
   :maxdepth: 2
 
   extensions/contract
+
+Windows
+-------
+
+.. toctree::
+  :maxdepth: 2
+
+  windows/win_requirements
+  windows/win_not_supported_features
+  windows/win_fips_support
+  windows/win_performance
+  windows/win_security
+  windows/win_run_as_service

@@ -30,7 +30,7 @@ envoy_extension_cc_test(
     ]) + envoy_select_wasm_rust_tests([
         "//test/extensions/bootstrap/wasm/test_data:logging_rust.wasm",
     ]),
-    extension_name = "envoy.bootstrap.wasm",
+    extension_names = ["envoy.bootstrap.wasm"],
     external_deps = ["abseil_optional"],
     deps = [
         "//source/common/event:dispatcher_lib",
@@ -49,11 +49,12 @@ envoy_extension_cc_test(
 
 envoy_extension_cc_test(
     name = "wasm_integration_test",
+    size = "large",
     srcs = ["wasm_integration_test.cc"],
     data = envoy_select_wasm_cpp_tests([
         "//test/extensions/bootstrap/wasm/test_data:http_cpp.wasm",
     ]),
-    extension_name = "envoy.bootstrap.wasm",
+    extension_names = ["envoy.bootstrap.wasm"],
     deps = [
         "//source/extensions/bootstrap/wasm:config",
         "//source/extensions/common/wasm:wasm_lib",
@@ -69,9 +70,9 @@ envoy_extension_cc_test(
         "//test/extensions/bootstrap/wasm/test_data:missing_cpp.wasm",
         "//test/extensions/bootstrap/wasm/test_data:start_cpp.wasm",
     ]),
-    extension_name = "envoy.bootstrap.wasm",
+    extension_names = ["envoy.bootstrap.wasm"],
     deps = [
-        "//include/envoy/registry",
+        "//envoy/registry",
         "//source/common/stats:isolated_store_lib",
         "//source/extensions/bootstrap/wasm:config",
         "//source/extensions/common/wasm:wasm_lib",
@@ -92,7 +93,7 @@ envoy_extension_cc_test_binary(
     data = envoy_select_wasm_cpp_tests([
         "//test/extensions/bootstrap/wasm/test_data:speed_cpp.wasm",
     ]),
-    extension_name = "envoy.bootstrap.wasm",
+    extension_names = ["envoy.bootstrap.wasm"],
     external_deps = [
         "abseil_optional",
         "benchmark",

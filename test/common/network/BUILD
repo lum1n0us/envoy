@@ -6,6 +6,7 @@ load(
     "envoy_cc_test",
     "envoy_cc_test_library",
     "envoy_package",
+    "envoy_proto_library",
 )
 
 licenses(["notice"])  # Apache 2
@@ -87,10 +88,12 @@ envoy_cc_test(
         "//test/mocks/buffer:buffer_mocks",
         "//test/mocks/event:event_mocks",
         "//test/mocks/network:network_mocks",
+        "//test/mocks/ssl:ssl_mocks",
         "//test/mocks/stats:stats_mocks",
         "//test/test_common:environment_lib",
         "//test/test_common:network_utility_lib",
         "//test/test_common:simulated_time_system_lib",
+        "//test/test_common:test_runtime_lib",
         "//test/test_common:test_time_lib",
         "//test/test_common:threadsafe_singleton_injector_lib",
         "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
@@ -98,64 +101,22 @@ envoy_cc_test(
 )
 
 envoy_cc_test(
-    name = "apple_dns_impl_test",
-    srcs = select({
-        "//bazel:apple": ["apple_dns_impl_test.cc"],
-        "//conditions:default": [],
-    }),
-    external_deps = ["abseil_synchronization"],
+    name = "happy_eyeballs_connection_provider_test",
+    srcs = ["happy_eyeballs_connection_provider_test.cc"],
     deps = [
-        "//include/envoy/event:dispatcher_interface",
-        "//include/envoy/network:dns_interface",
-        "//source/common/event:dispatcher_includes",
-        "//include/envoy/event:file_event_interface",
-        "//source/common/stats:isolated_store_lib",
-        "//source/common/event:dispatcher_lib",
-        "//source/common/network:address_lib",
-        "//source/common/common:random_generator_lib",
-        "//test/test_common:environment_lib",
-        "//test/test_common:network_utility_lib",
+        "//source/common/network:happy_eyeballs_connection_impl_lib",
         "//test/test_common:utility_lib",
-        "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
-        "//test/test_common:threadsafe_singleton_injector_lib",
-        "//test/mocks/event:event_mocks",
-    ] + select({
-        "//bazel:apple": [
-            "//source/common/network:dns_lib",
-        ],
-        "//conditions:default": [],
-    }),
+    ],
 )
 
 envoy_cc_test(
-    name = "dns_impl_test",
-    srcs = ["dns_impl_test.cc"],
-    args = [
-        # Used in createDnsResolver to force creation of DnsResolverImpl when running test on macOS.
-        "--runtime-feature-disable-for-tests=envoy.restart_features.use_apple_api_for_dns_lookups",
-    ],
-    # TODO(envoyproxy/windows-dev): Under winsock2 this is behaving unusually for windows, even as
-    # 127.0.0.1 and ::1 are explicitly added to `c:\windows\system32\drivers\etc\hosts` ... see:
-    # https://gist.github.com/wrowe/24fe5b93b58bb444bce7ecc134905395
-    tags = ["fails_on_clang_cl"],
+    name = "multi_connection_base_impl_test",
+    srcs = ["multi_connection_base_impl_test.cc"],
     deps = [
-        "//include/envoy/event:dispatcher_interface",
-        "//include/envoy/network:address_interface",
-        "//include/envoy/network:dns_interface",
-        "//source/common/buffer:buffer_lib",
-        "//source/common/event:dispatcher_includes",
-        "//source/common/event:dispatcher_lib",
-        "//source/common/network:address_lib",
-        "//source/common/network:dns_lib",
-        "//source/common/network:filter_lib",
-        "//source/common/network:listen_socket_lib",
-        "//source/common/stats:stats_lib",
-        "//source/common/stream_info:stream_info_lib",
+        "//source/common/network:multi_connection_base_impl_lib",
+        "//source/common/network:socket_option_lib",
+        "//test/mocks/event:event_mocks",
         "//test/mocks/network:network_mocks",
-        "//test/test_common:environment_lib",
-        "//test/test_common:network_utility_lib",
-        "//test/test_common:utility_lib",
-        "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
     ],
 )
 
@@ -170,7 +131,6 @@ envoy_cc_test(
         "//source/common/tcp_proxy",
         "//source/common/upstream:upstream_includes",
         "//source/common/upstream:upstream_lib",
-        "//source/extensions/filters/network/ratelimit:ratelimit_lib",
         "//test/common/upstream:utility_lib",
         "//test/extensions/filters/common/ratelimit:ratelimit_mocks",
         "//test/mocks/buffer:buffer_mocks",
@@ -182,7 +142,6 @@ envoy_cc_test(
         "//test/mocks/upstream:host_mocks",
         "//test/test_common:test_runtime_lib",
         "//test/test_common:utility_lib",
-        "@envoy_api//envoy/extensions/filters/network/ratelimit/v3:pkg_cc_proto",
         "@envoy_api//envoy/extensions/filters/network/tcp_proxy/v3:pkg_cc_proto",
     ],
 )
@@ -216,6 +175,16 @@ envoy_cc_test(
 )
 
 envoy_cc_test(
+    name = "listener_filter_buffer_impl_test",
+    srcs = ["listener_filter_buffer_impl_test.cc"],
+    deps = [
+        "//source/common/network:listener_filter_buffer_lib",
+        "//test/mocks/event:event_mocks",
+        "//test/mocks/network:io_handle_mocks",
+    ],
+)
+
+envoy_cc_test(
     name = "listener_impl_test",
     srcs = ["listener_impl_test.cc"],
     deps = [
@@ -228,6 +197,7 @@ envoy_cc_test(
         "//test/common/network:listener_impl_test_base_lib",
         "//test/mocks/network:network_mocks",
         "//test/mocks/runtime:runtime_mocks",
+        "//test/mocks/server:overload_manager_mocks",
         "//test/test_common:environment_lib",
         "//test/test_common:network_utility_lib",
         "//test/test_common:utility_lib",
@@ -240,6 +210,7 @@ envoy_cc_test(
     srcs = ["raw_buffer_socket_test.cc"],
     deps = [
         "//source/common/network:raw_buffer_socket_lib",
+        "//source/common/network:transport_socket_options_lib",
         "//test/test_common:network_utility_lib",
     ],
 )
@@ -291,7 +262,10 @@ envoy_cc_test(
     name = "udp_listener_impl_batch_writer_test",
     srcs = ["udp_listener_impl_batch_writer_test.cc"],
     # Skipping as quiche quic_gso_batch_writer.h does not exist on Windows
-    tags = ["skip_on_windows"],
+    tags = [
+        "nofips",
+        "skip_on_windows",
+    ],
     deps = [
         ":udp_listener_impl_test_base_lib",
         "//source/common/event:dispatcher_lib",
@@ -308,7 +282,7 @@ envoy_cc_test(
         "//test/test_common:network_utility_lib",
         "//test/test_common:threadsafe_singleton_injector_lib",
         "//test/test_common:utility_lib",
-        "@com_googlesource_quiche//:quic_test_tools_mock_syscall_wrapper_lib",
+        "@com_github_google_quiche//:quic_test_tools_mock_syscall_wrapper_lib",
         "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
     ],
 )
@@ -329,7 +303,7 @@ envoy_cc_test(
 
 envoy_cc_test_library(
     name = "socket_option_test",
-    srcs = ["socket_option_test.h"],
+    hdrs = ["socket_option_test.h"],
     deps = [
         "//source/common/network:address_lib",
         "//source/common/network:socket_option_factory_lib",
@@ -394,6 +368,30 @@ envoy_cc_test(
 )
 
 envoy_cc_fuzz_test(
+    name = "udp_fuzz",
+    srcs = ["udp_fuzz.cc"],
+    corpus = "udp_corpus",
+    deps = [
+        "udp_listener_impl_test_base_lib",
+        "//source/common/event:dispatcher_lib",
+        "//source/common/network:address_lib",
+        "//source/common/network:listener_lib",
+        "//source/common/network:socket_option_lib",
+        "//source/common/network:udp_packet_writer_handler_lib",
+        "//source/common/network:utility_lib",
+        "//source/common/stats:stats_lib",
+        "//test/common/network:listener_impl_test_base_lib",
+        "//test/mocks/network:network_mocks",
+        "//test/mocks/server:server_mocks",
+        "//test/test_common:environment_lib",
+        "//test/test_common:network_utility_lib",
+        "//test/test_common:threadsafe_singleton_injector_lib",
+        "//test/test_common:utility_lib",
+        "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
+    ],
+)
+
+envoy_cc_fuzz_test(
     name = "utility_fuzz_test",
     srcs = ["utility_fuzz_test.cc"],
     corpus = "utility_corpus",
@@ -429,6 +427,20 @@ envoy_cc_test(
         "//source/common/network:address_lib",
         "//test/mocks/api:api_mocks",
         "//test/test_common:threadsafe_singleton_injector_lib",
+        "//test/test_common:utility_lib",
+    ],
+)
+
+envoy_cc_test(
+    name = "win32_socket_handle_impl_test",
+    srcs = ["win32_socket_handle_impl_test.cc"],
+    deps = [
+        "//source/common/buffer:buffer_lib",
+        "//source/common/common:utility_lib",
+        "//source/common/network:address_lib",
+        "//test/mocks/api:api_mocks",
+        "//test/mocks/event:event_mocks",
+        "//test/test_common:threadsafe_singleton_injector_lib",
     ],
 )
 
@@ -439,6 +451,7 @@ envoy_cc_test(
     deps = [
         "//source/common/common:utility_lib",
         "//source/common/network:address_lib",
+        "//test/test_common:utility_lib",
     ],
 )
 
@@ -469,5 +482,23 @@ envoy_cc_test(
         "//source/common/network:address_lib",
         "//source/common/network:filter_matcher_lib",
         "//test/mocks/network:network_mocks",
+    ],
+)
+
+envoy_proto_library(
+    name = "listener_filter_buffer_fuzz_proto",
+    srcs = ["listener_filter_buffer_fuzz.proto"],
+)
+
+envoy_cc_fuzz_test(
+    name = "listener_filter_buffer_fuzz_test",
+    srcs = ["listener_filter_buffer_fuzz_test.cc"],
+    corpus = "listener_filter_buffer_corpus",
+    deps = [
+        ":listener_filter_buffer_fuzz_proto_cc_proto",
+        "//source/common/network:listener_filter_buffer_lib",
+        "//test/fuzz:utility_lib",
+        "//test/mocks/event:event_mocks",
+        "//test/mocks/network:io_handle_mocks",
     ],
 )

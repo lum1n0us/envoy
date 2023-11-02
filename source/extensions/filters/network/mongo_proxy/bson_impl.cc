@@ -1,14 +1,14 @@
-#include "extensions/filters/network/mongo_proxy/bson_impl.h"
+#include "source/extensions/filters/network/mongo_proxy/bson_impl.h"
 
 #include <cstdint>
 #include <sstream>
 #include <string>
 
-#include "common/common/assert.h"
-#include "common/common/byte_order.h"
-#include "common/common/fmt.h"
-#include "common/common/hex.h"
-#include "common/common/utility.h"
+#include "source/common/common/assert.h"
+#include "source/common/common/byte_order.h"
+#include "source/common/common/fmt.h"
+#include "source/common/common/hex.h"
+#include "source/common/common/utility.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -98,7 +98,10 @@ std::string BufferHelper::removeString(Buffer::Instance& data) {
   }
 
   char* start = reinterpret_cast<char*>(data.linearize(length));
-  std::string ret(start);
+  // The BSON spec encodes both strings and C style strings with an additional
+  // null byte, however strings may contain embedded null bytes, therefore the
+  // constructor needs to be given the length of the string explicitly.
+  std::string ret(start, length > 0 ? length - 1 : 0);
   data.drain(length);
   return ret;
 }
@@ -197,7 +200,7 @@ int32_t FieldImpl::byteSize() const {
   }
   }
 
-  NOT_REACHED_GCOVR_EXCL_LINE;
+  return 0; // for gcc
 }
 
 void FieldImpl::encode(Buffer::Instance& output) const {
@@ -250,8 +253,6 @@ void FieldImpl::encode(Buffer::Instance& output) const {
   case Type::Int32:
     return BufferHelper::writeInt32(output, value_.int32_value_);
   }
-
-  NOT_REACHED_GCOVR_EXCL_LINE;
 }
 
 bool FieldImpl::operator==(const Field& rhs) const {
@@ -317,7 +318,7 @@ bool FieldImpl::operator==(const Field& rhs) const {
   }
   }
 
-  NOT_REACHED_GCOVR_EXCL_LINE;
+  return false; // for gcc
 }
 
 std::string FieldImpl::toString() const {
@@ -366,22 +367,28 @@ std::string FieldImpl::toString() const {
   }
   }
 
-  NOT_REACHED_GCOVR_EXCL_LINE;
+  return "";
 }
 
 void DocumentImpl::fromBuffer(Buffer::Instance& data) {
-  uint64_t original_buffer_length = data.length();
-  int32_t message_length = BufferHelper::removeInt32(data);
-  if (static_cast<uint64_t>(message_length) > original_buffer_length) {
+  const ssize_t original_buffer_length = data.length();
+  const int32_t message_length = BufferHelper::removeInt32(data);
+  if (message_length <= 0 || message_length > original_buffer_length) {
     throw EnvoyException("invalid BSON message length");
   }
 
   ENVOY_LOG(trace, "BSON document length: {} data length: {}", message_length,
             original_buffer_length);
 
+  const ssize_t bytes_remaining_after_message = original_buffer_length - message_length;
   while (true) {
-    uint64_t document_bytes_remaining = data.length() - (original_buffer_length - message_length);
+    const ssize_t document_bytes_remaining =
+        static_cast<ssize_t>(data.length()) - bytes_remaining_after_message;
     ENVOY_LOG(trace, "BSON document bytes remaining: {}", document_bytes_remaining);
+    // Although mongo_proxy traffic is trusted, do a minimal check.
+    if (document_bytes_remaining <= 0) {
+      throw EnvoyException("invalid document");
+    }
     if (document_bytes_remaining == 1) {
       uint8_t last_byte = BufferHelper::removeByte(data);
       if (last_byte != 0) {
@@ -391,8 +398,8 @@ void DocumentImpl::fromBuffer(Buffer::Instance& data) {
       return;
     }
 
-    uint8_t element_type = BufferHelper::removeByte(data);
-    std::string key = BufferHelper::removeCString(data);
+    const uint8_t element_type = BufferHelper::removeByte(data);
+    const std::string key = BufferHelper::removeCString(data);
     ENVOY_LOG(trace, "BSON element type: {:#x} key: {}", element_type, key);
     switch (static_cast<Field::Type>(element_type)) {
     case Field::Type::Double: {
@@ -472,21 +479,21 @@ void DocumentImpl::fromBuffer(Buffer::Instance& data) {
     }
 
     case Field::Type::Int32: {
-      int32_t value = BufferHelper::removeInt32(data);
+      const int32_t value = BufferHelper::removeInt32(data);
       ENVOY_LOG(trace, "BSON int32: {}", value);
       addInt32(key, value);
       break;
     }
 
     case Field::Type::Timestamp: {
-      int64_t value = BufferHelper::removeInt64(data);
+      const int64_t value = BufferHelper::removeInt64(data);
       ENVOY_LOG(trace, "BSON timestamp: {}", value);
       addTimestamp(key, value);
       break;
     }
 
     case Field::Type::Int64: {
-      int64_t value = BufferHelper::removeInt64(data);
+      const int64_t value = BufferHelper::removeInt64(data);
       ENVOY_LOG(trace, "BSON int64: {}", value);
       addInt64(key, value);
       break;

@@ -1,11 +1,11 @@
-#include "common/network/socket_option_factory.h"
+#include "source/common/network/socket_option_factory.h"
 
 #include "envoy/config/core/v3/base.pb.h"
 
-#include "common/common/fmt.h"
-#include "common/network/addr_family_aware_socket_option_impl.h"
-#include "common/network/socket_option_impl.h"
-#include "common/network/win32_redirect_records_option_impl.h"
+#include "source/common/common/fmt.h"
+#include "source/common/network/addr_family_aware_socket_option_impl.h"
+#include "source/common/network/socket_option_impl.h"
+#include "source/common/network/win32_redirect_records_option_impl.h"
 
 namespace Envoy {
 namespace Network {
@@ -13,23 +13,25 @@ namespace Network {
 std::unique_ptr<Socket::Options>
 SocketOptionFactory::buildTcpKeepaliveOptions(Network::TcpKeepaliveConfig keepalive_config) {
   std::unique_ptr<Socket::Options> options = std::make_unique<Socket::Options>();
+  absl::optional<Network::Socket::Type> tcp_only = {Network::Socket::Type::Stream};
   options->push_back(std::make_shared<Network::SocketOptionImpl>(
-      envoy::config::core::v3::SocketOption::STATE_PREBIND, ENVOY_SOCKET_SO_KEEPALIVE, 1));
+      envoy::config::core::v3::SocketOption::STATE_PREBIND, ENVOY_SOCKET_SO_KEEPALIVE, 1,
+      tcp_only));
 
   if (keepalive_config.keepalive_probes_.has_value()) {
     options->push_back(std::make_shared<Network::SocketOptionImpl>(
         envoy::config::core::v3::SocketOption::STATE_PREBIND, ENVOY_SOCKET_TCP_KEEPCNT,
-        keepalive_config.keepalive_probes_.value()));
+        keepalive_config.keepalive_probes_.value(), tcp_only));
   }
   if (keepalive_config.keepalive_interval_.has_value()) {
     options->push_back(std::make_shared<Network::SocketOptionImpl>(
         envoy::config::core::v3::SocketOption::STATE_PREBIND, ENVOY_SOCKET_TCP_KEEPINTVL,
-        keepalive_config.keepalive_interval_.value()));
+        keepalive_config.keepalive_interval_.value(), tcp_only));
   }
   if (keepalive_config.keepalive_time_.has_value()) {
     options->push_back(std::make_shared<Network::SocketOptionImpl>(
         envoy::config::core::v3::SocketOption::STATE_PREBIND, ENVOY_SOCKET_TCP_KEEPIDLE,
-        keepalive_config.keepalive_time_.value()));
+        keepalive_config.keepalive_time_.value(), tcp_only));
   }
   return options;
 }
@@ -144,6 +146,18 @@ std::unique_ptr<Socket::Options> SocketOptionFactory::buildUdpGroOptions() {
   std::unique_ptr<Socket::Options> options = std::make_unique<Socket::Options>();
   options->push_back(std::make_shared<SocketOptionImpl>(
       envoy::config::core::v3::SocketOption::STATE_BOUND, ENVOY_SOCKET_UDP_GRO, 1));
+  return options;
+}
+
+std::unique_ptr<Socket::Options> SocketOptionFactory::buildZeroSoLingerOptions() {
+  std::unique_ptr<Socket::Options> options = std::make_unique<Socket::Options>();
+  struct linger linger;
+  linger.l_onoff = 1;
+  linger.l_linger = 0;
+  absl::string_view linger_bstr{reinterpret_cast<const char*>(&linger), sizeof(struct linger)};
+  options->push_back(std::make_shared<SocketOptionImpl>(
+      envoy::config::core::v3::SocketOption::STATE_LISTENING,
+      ENVOY_MAKE_SOCKET_OPTION_NAME(SOL_SOCKET, SO_LINGER), linger_bstr));
   return options;
 }
 

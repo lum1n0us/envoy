@@ -11,12 +11,11 @@ envoy_extension_package()
 
 envoy_cc_extension(
     name = "config",
-    srcs = ["config.h"],
-    category = "envoy.io_socket",
-    security_posture = "unknown",
-    status = "wip",
-    undocumented = True,
+    hdrs = ["config.h"],
+    # for integration tests and bootstrap.internal_listener
+    visibility = ["//visibility:public"],
     deps = [
+        ":io_handle_impl_lib",
     ],
 )
 
@@ -24,9 +23,11 @@ envoy_cc_library(
     name = "io_handle_lib",
     hdrs = ["io_handle.h"],
     deps = [
+        "//envoy/stream_info:filter_state_interface",
         "//source/common/buffer:buffer_lib",
         "//source/common/buffer:watermark_buffer_lib",
         "//source/common/common:empty_string",
+        "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
     ],
 )
 
@@ -40,7 +41,7 @@ envoy_cc_library(
     ],
     deps = [
         ":io_handle_lib",
-        "//include/envoy/event:dispatcher_interface",
+        "//envoy/event:dispatcher_interface",
     ],
 )
 

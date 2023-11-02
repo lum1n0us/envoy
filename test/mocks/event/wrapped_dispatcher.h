@@ -41,19 +41,14 @@ public:
                                         stream_info);
   }
 
-  Network::ClientConnectionPtr
-  createClientConnection(Network::Address::InstanceConstSharedPtr address,
-                         Network::Address::InstanceConstSharedPtr source_address,
-                         Network::TransportSocketPtr&& transport_socket,
-                         const Network::ConnectionSocket::OptionsSharedPtr& options) override {
+  Network::ClientConnectionPtr createClientConnection(
+      Network::Address::InstanceConstSharedPtr address,
+      Network::Address::InstanceConstSharedPtr source_address,
+      Network::TransportSocketPtr&& transport_socket,
+      const Network::ConnectionSocket::OptionsSharedPtr& options,
+      const Network::TransportSocketOptionsConstSharedPtr& transport_options) override {
     return impl_.createClientConnection(std::move(address), std::move(source_address),
-                                        std::move(transport_socket), options);
-  }
-
-  Network::DnsResolverSharedPtr
-  createDnsResolver(const std::vector<Network::Address::InstanceConstSharedPtr>& resolvers,
-                    const bool use_tcp_for_dns_lookups) override {
-    return impl_.createDnsResolver(resolvers, use_tcp_for_dns_lookups);
+                                        std::move(transport_socket), options, transport_options);
   }
 
   FileEventPtr createFileEvent(os_fd_t fd, FileReadyCb cb, FileTriggerType trigger,
@@ -65,16 +60,11 @@ public:
     return impl_.createFilesystemWatcher();
   }
 
-  Network::ListenerPtr createListener(Network::SocketSharedPtr&& socket,
-                                      Network::TcpListenerCallbacks& cb, bool bind_to_port,
-                                      uint32_t backlog_size) override {
-    return impl_.createListener(std::move(socket), cb, bind_to_port, backlog_size);
-  }
-
-  Network::UdpListenerPtr
-  createUdpListener(Network::SocketSharedPtr socket, Network::UdpListenerCallbacks& cb,
-                    const envoy::config::core::v3::UdpSocketConfig& config) override {
-    return impl_.createUdpListener(std::move(socket), cb, config);
+  Network::ListenerPtr
+  createListener(Network::SocketSharedPtr&& socket, Network::TcpListenerCallbacks& cb,
+                 Runtime::Loader& runtime, const Network::ListenerConfig& listener_config,
+                 Server::ThreadLocalOverloadStateOptRef overload_state) override {
+    return impl_.createListener(std::move(socket), cb, runtime, listener_config, overload_state);
   }
 
   TimerPtr createTimer(TimerCb cb) override { return impl_.createTimer(std::move(cb)); }
@@ -100,7 +90,7 @@ public:
     return impl_.listenForSignal(signal_num, std::move(cb));
   }
 
-  void post(std::function<void()> callback) override { impl_.post(std::move(callback)); }
+  void post(Event::PostCb callback) override { impl_.post(std::move(callback)); }
 
   void deleteInDispatcherThread(DispatcherThreadDeletableConstPtr deletable) override {
     impl_.deleteInDispatcherThread(std::move(deletable));
@@ -116,6 +106,8 @@ public:
   void popTrackedObject(const ScopeTrackedObject* expected_object) override {
     return impl_.popTrackedObject(expected_object);
   }
+
+  bool trackedObjectStackIsEmpty() const override { return impl_.trackedObjectStackIsEmpty(); }
 
   MonotonicTime approximateMonotonicTime() const override {
     return impl_.approximateMonotonicTime();

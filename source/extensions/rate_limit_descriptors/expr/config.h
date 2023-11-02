@@ -3,7 +3,7 @@
 #include "envoy/ratelimit/ratelimit.h"
 #include "envoy/registry/registry.h"
 
-#include "extensions/filters/common/expr/evaluator.h"
+#include "source/extensions/filters/common/expr/evaluator.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -20,11 +20,7 @@ public:
   ProtobufTypes::MessagePtr createEmptyConfigProto() override;
   RateLimit::DescriptorProducerPtr
   createDescriptorProducerFromProto(const Protobuf::Message& message,
-                                    ProtobufMessage::ValidationVisitor& validator) override;
-
-private:
-  Filters::Common::Expr::Builder& getOrCreateBuilder();
-  Filters::Common::Expr::BuilderPtr expr_builder_;
+                                    Server::Configuration::CommonFactoryContext& context) override;
 };
 
 } // namespace Expr

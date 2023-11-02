@@ -12,7 +12,7 @@ Envoy also has support for transmitting and receiving generic ``TCP`` traffic wi
 
 Envoy also offers a number of other ``HTTP``-based protocols for authentication and authorization
 such as :ref:`JWT <arch_overview_jwt_authn>`, :ref:`RBAC <arch_overview_rbac>`
-and :ref:`OAuth <envoy_v3_api_file_envoy/extensions/filters/http/oauth2/v3alpha/oauth.proto>`.
+and :ref:`OAuth <envoy_v3_api_file_envoy/extensions/filters/http/oauth2/v3/oauth.proto>`.
 
 .. warning::
 
@@ -46,8 +46,8 @@ You will also need to provide valid certificates.
 .. literalinclude:: _include/envoy-demo-tls.yaml
    :language: yaml
    :linenos:
-   :lines: 1-37
-   :emphasize-lines: 28-37
+   :lines: 1-40
+   :emphasize-lines: 30-39
    :caption: :download:`envoy-demo-tls.yaml <_include/envoy-demo-tls.yaml>`
 
 Connecting to an "upstream" ``TLS`` service is conversely done by adding an
@@ -58,9 +58,9 @@ to the :ref:`transport_socket <extension_envoy.transport_sockets.tls>` of a
 .. literalinclude:: _include/envoy-demo-tls.yaml
    :language: yaml
    :linenos:
-   :lineno-start: 39
-   :lines: 39-57
-   :emphasize-lines: 16-19
+   :lineno-start: 40
+   :lines: 40-58
+   :emphasize-lines: 15-19
    :caption: :download:`envoy-demo-tls.yaml <_include/envoy-demo-tls.yaml>`
 
 .. _start_quick_start_securing_validation:
@@ -79,9 +79,9 @@ Firstly, you can ensure that the certificates are from a mutually trusted certif
 .. literalinclude:: _include/envoy-demo-tls-validation.yaml
    :language: yaml
    :linenos:
-   :lineno-start: 43
-   :lines: 43-53
-   :emphasize-lines: 6-9
+   :lineno-start: 42
+   :lines: 42-52
+   :emphasize-lines: 8-11
    :caption: :download:`envoy-demo-tls-validation.yaml <_include/envoy-demo-tls-validation.yaml>`
 
 You can also ensure that the "Subject Alternative Names" for the cerficate match.
@@ -92,15 +92,15 @@ certificate is valid for.
 .. literalinclude:: _include/envoy-demo-tls-validation.yaml
    :language: yaml
    :linenos:
-   :lineno-start: 43
-   :lines: 43-53
+   :lineno-start: 44
+   :lines: 44-54
    :emphasize-lines: 6-7, 10-11
    :caption: :download:`envoy-demo-tls-validation.yaml <_include/envoy-demo-tls-validation.yaml>`
 
 .. note::
 
    If the "Subject Alternative Names" for a certificate are for a wildcard domain, eg ``*.example.com``,
-   this is what you should use when matching with ``match_subject_alt_names``.
+   this is what you should use when matching with ``match_typed_subject_alt_names``.
 
 .. note::
 
@@ -121,22 +121,22 @@ and specify a mutually trusted certificate authority:
 .. literalinclude:: _include/envoy-demo-tls-client-auth.yaml
    :language: yaml
    :linenos:
-   :lineno-start: 27
-   :lines: 27-39
+   :lineno-start: 29
+   :lines: 29-43
    :emphasize-lines: 6, 8-10
    :caption: :download:`envoy-demo-tls-client-auth.yaml <_include/envoy-demo-tls-client-auth.yaml>`
 
 You can further restrict the authentication of connecting clients by specifying the allowed
 "Subject Alternative Names" in
-:ref:`match_subject_alt_names <envoy_v3_api_field_extensions.transport_sockets.tls.v3.CertificateValidationContext.match_subject_alt_names>`,
+:ref:`match_typed_subject_alt_names <envoy_v3_api_field_extensions.transport_sockets.tls.v3.CertificateValidationContext.match_typed_subject_alt_names>`,
 similar to validating upstream certificates :ref:`described above <start_quick_start_securing_validation>`.
 
 .. literalinclude:: _include/envoy-demo-tls-client-auth.yaml
    :language: yaml
    :linenos:
-   :lineno-start: 27
-   :lines: 27-39
-   :emphasize-lines: 7, 11-12
+   :lineno-start: 29
+   :lines: 29-43
+   :emphasize-lines: 7, 11-14
    :caption: :download:`envoy-demo-tls-client-auth.yaml <_include/envoy-demo-tls-client-auth.yaml>`
 
 .. note::
@@ -154,9 +154,9 @@ When connecting to an upstream with client certificates you can set them as foll
 .. literalinclude:: _include/envoy-demo-tls-client-auth.yaml
    :language: yaml
    :linenos:
-   :lineno-start: 45
-   :lines: 45-69
-   :emphasize-lines: 21-25
+   :lineno-start: 46
+   :lines: 46-70
+   :emphasize-lines: 22-25
    :caption: :download:`envoy-demo-tls-client-auth.yaml <_include/envoy-demo-tls-client-auth.yaml>`
 
 .. _start_quick_start_securing_sni:
@@ -174,8 +174,8 @@ To secure specific domains on a listening connection with ``SNI``, you should se
 .. literalinclude:: _include/envoy-demo-tls-sni.yaml
    :language: yaml
    :linenos:
-   :lineno-start: 27
-   :lines: 27-35
+   :lineno-start: 29
+   :lines: 29-37
    :emphasize-lines: 2-4
    :caption: :download:`envoy-demo-tls-sni.yaml <_include/envoy-demo-tls-sni.yaml>`
 
@@ -195,8 +195,8 @@ This will usually be the DNS name of the service you are connecting to.
 .. literalinclude:: _include/envoy-demo-tls-sni.yaml
    :language: yaml
    :linenos:
-   :lineno-start: 56
-   :lines: 56-61
+   :lineno-start: 57
+   :lines: 57-62
    :emphasize-lines: 6
    :caption: :download:`envoy-demo-tls-sni.yaml <_include/envoy-demo-tls-sni.yaml>`
 

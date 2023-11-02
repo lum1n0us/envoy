@@ -1,0 +1,79 @@
+name: Verify
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+    inputs:
+      trusted:
+        type: boolean
+        default: false
+      repo-ref:
+        type: string
+      given_ref:
+        type: string
+
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}-${{ github.workflow }}-verify
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: ${{ matrix.name || matrix.target }}
+    uses: ./.github/workflows/_ci.yml
+    with:
+      target: ${{ matrix.target }}
+      rbe: ${{ matrix.rbe }}
+      cache-build-image:
+      command-prefix:
+      source: ${{ matrix.source }}
+      trusted: ${{ inputs.trusted }}
+      repo-ref: ${{ inputs.repo-ref }}
+      runs-on: envoy-x64-small
+      steps-pre: ${{ matrix.steps-pre }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - name: examples
+          target: verify_examples
+          source: |
+            export NO_BUILD_SETUP=1
+          rbe: false
+          steps-pre: |
+            - id: short_name
+              uses: envoyproxy/toolshed/gh-actions/str/sub@actions-v0.1.1
+              with:
+                length: 7
+                string: ${{ inputs.repo-ref }}
+                min: 40
+            - id: gcp
+              run: |
+                PREFIX=https://storage.googleapis.com/envoy-
+                BUCKET=${{ inputs.trusted && 'postsubmit' || 'pr' }}
+                NAME=%{{ steps.short_name.outputs.string }}
+                echo "url=${PREFIX}${BUCKET}/${NAME}" >> $GITHUB_OUTPUT
+              shell: bash
+            - uses: envoyproxy/toolshed/gh-actions/docker/fetch@actions-v0.1.1
+              with:
+                url: |
+                  %{{ steps.gcp.outputs.url }}/envoy.tar
+                variant: dev
+            - uses: envoyproxy/toolshed/gh-actions/docker/fetch@actions-v0.1.1
+              with:
+                url: |
+                  %{{ steps.gcp.outputs.url }}/envoy-contrib.tar
+                variant: contrib-dev
+            - uses: envoyproxy/toolshed/gh-actions/docker/fetch@actions-v0.1.1
+              with:
+                url: |
+                  %{{ steps.gcp.outputs.url }}/envoy-google-vrp.tar
+                variant: google-vrp-dev
+            - run: docker images | grep envoy
+              shell: bash
+            - run: |
+                export DEBIAN_FRONTEND=noninteractive
+                sudo apt-get -qq update -y
+                sudo apt-get -qq install -y --no-install-recommends expect
+              shell: bash

@@ -1,8 +1,8 @@
-#include "extensions/resource_monitors/injected_resource/injected_resource_monitor.h"
+#include "source/extensions/resource_monitors/injected_resource/injected_resource_monitor.h"
 
 #include "envoy/extensions/resource_monitors/injected_resource/v3/injected_resource.pb.h"
 
-#include "common/common/assert.h"
+#include "source/common/common/assert.h"
 
 #include "absl/strings/numbers.h"
 
@@ -15,19 +15,21 @@ InjectedResourceMonitor::InjectedResourceMonitor(
     const envoy::extensions::resource_monitors::injected_resource::v3::InjectedResourceConfig&
         config,
     Server::Configuration::ResourceMonitorFactoryContext& context)
-    : filename_(config.filename()), file_changed_(true),
-      watcher_(context.dispatcher().createFilesystemWatcher()), api_(context.api()) {
+    : filename_(config.filename()),
+      watcher_(context.mainThreadDispatcher().createFilesystemWatcher()), api_(context.api()) {
   watcher_->addWatch(filename_, Filesystem::Watcher::Events::MovedTo,
                      [this](uint32_t) { onFileChanged(); });
 }
 
 void InjectedResourceMonitor::onFileChanged() { file_changed_ = true; }
 
-void InjectedResourceMonitor::updateResourceUsage(Server::ResourceMonitor::Callbacks& callbacks) {
+void InjectedResourceMonitor::updateResourceUsage(Server::ResourceUpdateCallbacks& callbacks) {
   if (file_changed_) {
     file_changed_ = false;
     TRY_ASSERT_MAIN_THREAD {
-      const std::string contents = api_.fileSystem().fileReadToEnd(filename_);
+      auto file_or_error = api_.fileSystem().fileReadToEnd(filename_);
+      THROW_IF_STATUS_NOT_OK(file_or_error, throw);
+      const std::string contents = file_or_error.value();
       double pressure;
       if (absl::SimpleAtod(contents, &pressure)) {
         if (pressure < 0 || pressure > 1) {

@@ -5,6 +5,7 @@ load(
     "envoy_cc_fuzz_test",
     "envoy_cc_test",
     "envoy_package",
+    "envoy_select_boringssl",
 )
 
 licenses(["notice"])  # Apache 2
@@ -23,6 +24,28 @@ envoy_cc_test(
 envoy_cc_test(
     name = "assert_test",
     srcs = ["assert_test.cc"],
+    deps = [
+        "//source/common/common:assert_lib",
+        "//test/test_common:logging_lib",
+        "//test/test_common:utility_lib",
+    ],
+)
+
+envoy_cc_test(
+    name = "containers_test",
+    srcs = ["containers_test.cc"],
+    deps = [
+        "//source/common/common:containers_lib",
+        "//test/test_common:logging_lib",
+        "//test/test_common:utility_lib",
+    ],
+)
+
+envoy_cc_test(
+    # Same as assert_test above, but with ENVOY_LOG_DEBUG_ASSERT_IN_RELEASE
+    name = "assert_enabled_in_release_test",
+    srcs = ["assert_test.cc"],
+    copts = ["-DENVOY_LOG_DEBUG_ASSERT_IN_RELEASE"],
     deps = [
         "//source/common/common:assert_lib",
         "//test/test_common:logging_lib",
@@ -78,6 +101,15 @@ envoy_cc_test(
     name = "cleanup_test",
     srcs = ["cleanup_test.cc"],
     deps = ["//source/common/common:cleanup_lib"],
+)
+
+envoy_cc_test(
+    name = "dns_utils_test",
+    srcs = ["dns_utils_test.cc"],
+    deps = [
+        "//source/common/common:dns_utils_lib",
+        "//test/test_common:utility_lib",
+    ],
 )
 
 envoy_cc_test(
@@ -140,7 +172,17 @@ envoy_cc_test(
 )
 
 envoy_cc_test(
-    name = "fancy_log_macros_test",
+    name = "log_verbosity_update_test",
+    srcs = ["log_verbosity_update_test.cc"],
+    args = ["--enable-fine-grain-logging"],
+    deps = [
+        "//source/common/common:minimal_logger_lib",
+        "//test/test_common:logging_lib",
+    ],
+)
+
+envoy_cc_test(
+    name = "fine_grain_log_macros_test",
     srcs = ["log_macros_test.cc"],
     args = ["--enable-fine-grain-logging"],
     deps = [
@@ -169,6 +211,8 @@ envoy_cc_test(
     srcs = ["logger_test.cc"],
     deps = [
         "//source/common/common:minimal_logger_lib",
+        "//test/mocks/http:http_mocks",
+        "//test/mocks/network:network_mocks",
     ],
 )
 
@@ -188,6 +232,7 @@ envoy_cc_test(
         "//source/common/common:matchers_lib",
         "//source/common/config:metadata_lib",
         "//source/common/protobuf:utility_lib",
+        "//source/common/stream_info:filter_state_lib",
         "//test/test_common:utility_lib",
         "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
         "@envoy_api//envoy/type/matcher/v3:pkg_cc_proto",
@@ -232,6 +277,17 @@ envoy_cc_test(
         "//test/test_common:simulated_time_system_lib",
         "//test/test_common:test_time_lib",
         "//test/test_common:utility_lib",
+    ],
+)
+
+envoy_cc_test(
+    name = "packed_struct_test",
+    srcs = ["packed_struct_test.cc"],
+    deps = [
+        "//source/common/common:packed_struct_lib",
+        "//test/common/stats:stat_test_utility_lib",
+        "//test/test_common:utility_lib",
+        "@envoy_api//envoy/config/route/v3:pkg_cc_proto",
     ],
 )
 
@@ -295,7 +351,10 @@ envoy_cc_test(
 envoy_cc_test(
     name = "callback_impl_test",
     srcs = ["callback_impl_test.cc"],
-    deps = ["//source/common/common:callback_impl_lib"],
+    deps = [
+        "//source/common/common:callback_impl_lib",
+        "//test/mocks/event:event_mocks",
+    ],
 )
 
 envoy_cc_benchmark_binary(
@@ -367,6 +426,7 @@ envoy_cc_test(
 envoy_cc_test(
     name = "version_test",
     srcs = ["version_test.cc"],
+    copts = envoy_select_boringssl(["-DENVOY_SSL_FIPS"]),
     external_deps = [
         "abseil_strings",
     ],
@@ -406,4 +466,48 @@ envoy_cc_test(
         "//test/mocks:common_lib",
         "//test/test_common:utility_lib",
     ],
+)
+
+envoy_cc_test(
+    name = "scope_tracked_object_stack_test",
+    srcs = ["scope_tracked_object_stack_test.cc"],
+    deps = [
+        "//source/common/common:scope_tracked_object_stack",
+        "//source/common/common:utility_lib",
+    ],
+)
+
+envoy_cc_test(
+    name = "union_string_test",
+    srcs = ["union_string_test.cc"],
+    deps = [
+        "//envoy/common:union_string",
+    ],
+)
+
+envoy_cc_test(
+    name = "bit_array_test",
+    srcs = ["bit_array_test.cc"],
+    deps = [
+        "//source/common/common:bit_array_lib",
+        "//source/common/common:random_generator_lib",
+    ],
+)
+
+envoy_cc_test(
+    name = "inline_map_test",
+    srcs = ["inline_map_test.cc"],
+    deps = ["//source/common/common:inline_map"],
+)
+
+envoy_cc_benchmark_binary(
+    name = "inline_map_speed_test",
+    srcs = ["inline_map_speed_test.cc"],
+    external_deps = ["benchmark"],
+    deps = ["//source/common/common:inline_map"],
+)
+
+envoy_benchmark_test(
+    name = "inline_map_speed_test_benchmark_test",
+    benchmark_binary = "inline_map_speed_test",
 )

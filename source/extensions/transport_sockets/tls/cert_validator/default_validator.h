@@ -1,9 +1,11 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "envoy/common/pure.h"
@@ -14,11 +16,12 @@
 #include "envoy/ssl/private_key/private_key.h"
 #include "envoy/ssl/ssl_socket_extended_info.h"
 
-#include "common/common/matchers.h"
-#include "common/stats/symbol_table_impl.h"
-
-#include "extensions/transport_sockets/tls/cert_validator/cert_validator.h"
-#include "extensions/transport_sockets/tls/stats.h"
+#include "source/common/common/logger.h"
+#include "source/common/common/matchers.h"
+#include "source/common/stats/symbol_table.h"
+#include "source/extensions/transport_sockets/tls/cert_validator/cert_validator.h"
+#include "source/extensions/transport_sockets/tls/cert_validator/san_matcher.h"
+#include "source/extensions/transport_sockets/tls/stats.h"
 
 #include "absl/synchronization/mutex.h"
 #include "openssl/ssl.h"
@@ -29,7 +32,7 @@ namespace Extensions {
 namespace TransportSockets {
 namespace Tls {
 
-class DefaultCertValidator : public CertValidator {
+class DefaultCertValidator : public CertValidator, Logger::Loggable<Logger::Id::connection> {
 public:
   DefaultCertValidator(const Envoy::Ssl::CertificateValidationContextConfig* config,
                        SslStats& stats, TimeSource& time_source);
@@ -39,23 +42,26 @@ public:
   // Tls::CertValidator
   void addClientValidationContext(SSL_CTX* context, bool require_client_cert) override;
 
-  int doVerifyCertChain(X509_STORE_CTX* store_ctx, Ssl::SslExtendedSocketInfo* ssl_extended_info,
-                        X509& leaf_cert,
-                        const Network::TransportSocketOptions* transport_socket_options) override;
+  ValidationResults
+  doVerifyCertChain(STACK_OF(X509)& cert_chain, Ssl::ValidateResultCallbackPtr callback,
+                    const Network::TransportSocketOptionsConstSharedPtr& transport_socket_options,
+                    SSL_CTX& ssl, const CertValidator::ExtraValidationContext& validation_context,
+                    bool is_server, absl::string_view host_name) override;
 
   int initializeSslContexts(std::vector<SSL_CTX*> contexts, bool provides_certificates) override;
 
   void updateDigestForSessionId(bssl::ScopedEVP_MD_CTX& md, uint8_t hash_buffer[EVP_MAX_MD_SIZE],
                                 unsigned hash_length) override;
 
-  size_t daysUntilFirstCertExpires() const override;
+  absl::optional<uint32_t> daysUntilFirstCertExpires() const override;
   std::string getCaFileName() const override { return ca_file_path_; };
   Envoy::Ssl::CertificateDetailsPtr getCaCertInformation() const override;
 
   // Utility functions.
   Envoy::Ssl::ClientValidationStatus
   verifyCertificate(X509* cert, const std::vector<std::string>& verify_san_list,
-                    const std::vector<Matchers::StringMatcherImpl>& subject_alt_name_matchers);
+                    const std::vector<SanMatcherPtr>& subject_alt_name_matchers,
+                    std::string* error_details, uint8_t* out_alert);
 
   /**
    * Verifies certificate hash for pinning. The hash is a hex-encoded SHA-256 of the DER-encoded
@@ -88,25 +94,20 @@ public:
   static bool verifySubjectAltName(X509* cert, const std::vector<std::string>& subject_alt_names);
 
   /**
-   * Determines whether the given name matches 'pattern' which may optionally begin with a wildcard.
-   * NOTE:  public for testing
-   * @param dns_name the DNS name to match
-   * @param pattern the pattern to match against (*.example.com)
-   * @return true if the san matches pattern
-   */
-  static bool dnsNameMatch(const absl::string_view dns_name, const absl::string_view pattern);
-
-  /**
    * Performs subjectAltName matching with the provided matchers.
    * @param ssl the certificate to verify
    * @param subject_alt_name_matchers the configured matchers to match
    * @return true if the verification succeeds
    */
-  static bool
-  matchSubjectAltName(X509* cert,
-                      const std::vector<Matchers::StringMatcherImpl>& subject_alt_name_matchers);
+  static bool matchSubjectAltName(X509* cert,
+                                  const std::vector<SanMatcherPtr>& subject_alt_name_matchers);
 
 private:
+  bool verifyCertAndUpdateStatus(X509* leaf_cert,
+                                 const Network::TransportSocketOptions* transport_socket_options,
+                                 Envoy::Ssl::ClientValidationStatus& detailed_status,
+                                 std::string* error_details, uint8_t* out_alert);
+
   const Envoy::Ssl::CertificateValidationContextConfig* config_;
   SslStats& stats_;
   TimeSource& time_source_;
@@ -114,10 +115,9 @@ private:
   bool allow_untrusted_certificate_{false};
   bssl::UniquePtr<X509> ca_cert_;
   std::string ca_file_path_;
-  std::vector<Matchers::StringMatcherImpl> subject_alt_name_matchers_;
+  std::vector<SanMatcherPtr> subject_alt_name_matchers_;
   std::vector<std::vector<uint8_t>> verify_certificate_hash_list_;
   std::vector<std::vector<uint8_t>> verify_certificate_spki_list_;
-  std::vector<std::string> verify_subject_alt_name_list_;
   bool verify_trusted_ca_{false};
 };
 

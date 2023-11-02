@@ -1,10 +1,9 @@
-#include "extensions/filters/http/decompressor/config.h"
+#include "source/extensions/filters/http/decompressor/config.h"
 
 #include "envoy/compression/decompressor/config.h"
 
-#include "common/config/utility.h"
-
-#include "extensions/filters/http/decompressor/decompressor_filter.h"
+#include "source/common/config/utility.h"
+#include "source/extensions/filters/http/decompressor/decompressor_filter.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -21,8 +20,8 @@ Http::FilterFactoryCb DecompressorFilterFactory::createFilterFactoryFromProtoTyp
           Compression::Decompressor::NamedDecompressorLibraryConfigFactory>::
           getFactoryByType(decompressor_library_type);
   if (decompressor_library_factory == nullptr) {
-    throw EnvoyException(fmt::format("Didn't find a registered implementation for type: '{}'",
-                                     decompressor_library_type));
+    throwEnvoyExceptionOrPanic(fmt::format("Didn't find a registered implementation for type: '{}'",
+                                           decompressor_library_type));
   }
   ProtobufTypes::MessagePtr message = Config::Utility::translateAnyToFactoryConfig(
       proto_config.decompressor_library().typed_config(), context.messageValidationVisitor(),

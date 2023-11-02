@@ -8,16 +8,18 @@
 #include "envoy/upstream/cluster_manager.h"
 #include "envoy/upstream/upstream.h"
 
-#include "common/access_log/access_log_impl.h"
-#include "common/config/utility.h"
-#include "common/protobuf/message_validator_impl.h"
-#include "common/runtime/runtime_impl.h"
+#include "source/common/access_log/access_log_impl.h"
+#include "source/common/config/utility.h"
+#include "source/common/protobuf/message_validator_impl.h"
+#include "source/common/runtime/runtime_impl.h"
+#include "source/common/stream_info/utility.h"
 
 #include "test/common/stream_info/test_util.h"
 #include "test/common/upstream/utility.h"
 #include "test/mocks/access_log/mocks.h"
 #include "test/mocks/event/mocks.h"
 #include "test/mocks/filesystem/mocks.h"
+#include "test/mocks/router/mocks.h"
 #include "test/mocks/runtime/mocks.h"
 #include "test/mocks/server/factory_context.h"
 #include "test/mocks/upstream/cluster_info.h"
@@ -38,32 +40,40 @@ namespace Envoy {
 namespace AccessLog {
 namespace {
 
-envoy::config::accesslog::v3::AccessLog parseAccessLogFromV3Yaml(const std::string& yaml,
-                                                                 bool avoid_boosting = true) {
+envoy::config::accesslog::v3::AccessLog parseAccessLogFromV3Yaml(const std::string& yaml) {
   envoy::config::accesslog::v3::AccessLog access_log;
-  TestUtility::loadFromYamlAndValidate(yaml, access_log, false, avoid_boosting);
+  TestUtility::loadFromYamlAndValidate(yaml, access_log);
   return access_log;
 }
 
 class AccessLogImplTest : public Event::TestUsingSimulatedTime, public testing::Test {
 public:
-  AccessLogImplTest() : file_(new MockAccessLogFile()) {
+  AccessLogImplTest()
+      : stream_info_(time_source_), file_(new MockAccessLogFile()),
+        engine_(std::make_unique<Regex::GoogleReEngine>()) {
     ON_CALL(context_, runtime()).WillByDefault(ReturnRef(runtime_));
     ON_CALL(context_, accessLogManager()).WillByDefault(ReturnRef(log_manager_));
     ON_CALL(log_manager_, createAccessLog(_)).WillByDefault(Return(file_));
     ON_CALL(*file_, write(_)).WillByDefault(SaveArg<0>(&output_));
+    stream_info_.addBytesReceived(1);
+    stream_info_.addBytesSent(2);
+    stream_info_.protocol(Http::Protocol::Http11);
+    // Clear default stream id provider.
+    stream_info_.stream_id_provider_ = nullptr;
   }
 
+  NiceMock<MockTimeSystem> time_source_;
   Http::TestRequestHeaderMapImpl request_headers_{{":method", "GET"}, {":path", "/"}};
   Http::TestResponseHeaderMapImpl response_headers_;
   Http::TestResponseTrailerMapImpl response_trailers_;
   TestStreamInfo stream_info_;
   std::shared_ptr<MockAccessLogFile> file_;
   StringViewSaver output_;
+  ScopedInjectableLoader<Regex::Engine> engine_;
 
   NiceMock<Runtime::MockLoader> runtime_;
   NiceMock<Envoy::AccessLog::MockAccessLogManager> log_manager_;
-  NiceMock<Server::Configuration::MockServerFactoryContext> context_;
+  NiceMock<Server::Configuration::MockFactoryContext> context_;
 };
 
 TEST_F(AccessLogImplTest, LogMoreData) {
@@ -77,13 +87,14 @@ typed_config:
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
   EXPECT_CALL(*file_, write(_));
-  stream_info_.response_flags_ = StreamInfo::ResponseFlag::UpstreamConnectionFailure;
+  stream_info_.setResponseFlag(StreamInfo::ResponseFlag::UpstreamConnectionFailure);
   request_headers_.addCopy(Http::Headers::get().UserAgent, "user-agent-set");
   request_headers_.addCopy(Http::Headers::get().RequestId, "id");
   request_headers_.addCopy(Http::Headers::get().Host, "host");
   request_headers_.addCopy(Http::Headers::get().ForwardedFor, "x.x.x.x");
 
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
   EXPECT_EQ("[1999-01-01T00:00:00.000Z] \"GET / HTTP/1.1\" 0 UF 1 2 3 - \"x.x.x.x\" "
             "\"user-agent-set\" \"id\" \"host\" \"-\"\n",
             output_);
@@ -102,11 +113,12 @@ typed_config:
   EXPECT_CALL(*file_, write(_));
 
   auto cluster = std::make_shared<NiceMock<Upstream::MockClusterInfo>>();
-  stream_info_.upstream_host_ =
-      Upstream::makeTestHostDescription(cluster, "tcp://10.0.0.5:1234", simTime());
-  stream_info_.response_flags_ = StreamInfo::ResponseFlag::DownstreamConnectionTermination;
+  stream_info_.upstreamInfo()->setUpstreamHost(
+      Upstream::makeTestHostDescription(cluster, "tcp://10.0.0.5:1234", simTime()));
+  stream_info_.setResponseFlag(StreamInfo::ResponseFlag::DownstreamConnectionTermination);
 
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
   EXPECT_EQ("[1999-01-01T00:00:00.000Z] \"GET / HTTP/1.1\" 0 DC 1 2 3 - \"-\" \"-\" \"-\" \"-\" "
             "\"10.0.0.5:1234\"\n",
             output_);
@@ -120,25 +132,30 @@ typed_config:
   path: /dev/null
   log_format:
     text_format_source:
-      inline_string: "[%START_TIME%] \"%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH):256% %PROTOCOL%\" %RESPONSE_CODE% %RESPONSE_FLAGS% %ROUTE_NAME% %BYTES_RECEIVED% %BYTES_SENT% %DURATION% %RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% \"%REQ(X-FORWARDED-FOR)%\" \"%REQ(USER-AGENT)%\" \"%REQ(X-REQUEST-ID)%\"  \"%REQ(:AUTHORITY)%\"\n"
+      inline_string: "[%START_TIME%] \"%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH):256% %PROTOCOL%\" %RESPONSE_CODE% %RESPONSE_FLAGS% %ROUTE_NAME% %BYTES_RECEIVED% %BYTES_SENT% %UPSTREAM_WIRE_BYTES_RECEIVED% %UPSTREAM_WIRE_BYTES_SENT% %DURATION% %RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% \"%REQ(X-FORWARDED-FOR)%\" \"%REQ(USER-AGENT)%\" \"%REQ(X-REQUEST-ID)%\"  \"%REQ(:AUTHORITY)%\"\n"
   )EOF";
 
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
   EXPECT_CALL(*file_, write(_));
-  stream_info_.route_name_ = "route-test-name";
-  stream_info_.response_flags_ = StreamInfo::ResponseFlag::UpstreamConnectionFailure;
+
+  auto route = std::make_shared<NiceMock<Router::MockRoute>>();
+  route->route_name_ = "route-test-name";
+
+  stream_info_.route_ = route;
+  stream_info_.setResponseFlag(StreamInfo::ResponseFlag::UpstreamConnectionFailure);
   request_headers_.addCopy(Http::Headers::get().UserAgent, "user-agent-set");
   request_headers_.addCopy(Http::Headers::get().RequestId, "id");
   request_headers_.addCopy(Http::Headers::get().Host, "host");
   request_headers_.addCopy(Http::Headers::get().ForwardedFor, "x.x.x.x");
 
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
-  EXPECT_EQ(
-      "[1999-01-01T00:00:00.000Z] \"GET / HTTP/1.1\" 0 UF route-test-name 1 2 3 - \"x.x.x.x\" "
-      "\"user-agent-set\" \"id\"  \"host\"\n",
-      output_);
+  EXPECT_EQ("[1999-01-01T00:00:00.000Z] \"GET / HTTP/1.1\" 0 UF route-test-name 1 2 0 0 3 - "
+            "\"x.x.x.x\" "
+            "\"user-agent-set\" \"id\"  \"host\"\n",
+            output_);
 }
 
 TEST_F(AccessLogImplTest, HeadersBytes) {
@@ -170,7 +187,8 @@ typed_config:
   // response trailers:
   // response_trailer_key: response_trailer_val
 
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   EXPECT_EQ(output_, "52 38 40");
 }
@@ -188,7 +206,8 @@ typed_config:
   EXPECT_CALL(*file_, write(_));
   response_headers_.addCopy(Http::Headers::get().EnvoyUpstreamServiceTime, "999");
 
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
   EXPECT_EQ("[1999-01-01T00:00:00.000Z] \"GET / HTTP/1.1\" 0 - 1 2 3 999 \"-\" \"-\" \"-\" \"-\" "
             "\"-\"\n",
             output_);
@@ -205,7 +224,8 @@ typed_config:
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
   EXPECT_CALL(*file_, write(_));
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
   EXPECT_EQ(
       "[1999-01-01T00:00:00.000Z] \"GET / HTTP/1.1\" 0 - 1 2 3 - \"-\" \"-\" \"-\" \"-\" \"-\"\n",
       output_);
@@ -213,8 +233,8 @@ typed_config:
 
 TEST_F(AccessLogImplTest, UpstreamHost) {
   auto cluster = std::make_shared<NiceMock<Upstream::MockClusterInfo>>();
-  stream_info_.upstream_host_ =
-      Upstream::makeTestHostDescription(cluster, "tcp://10.0.0.5:1234", simTime());
+  stream_info_.upstreamInfo()->setUpstreamHost(
+      Upstream::makeTestHostDescription(cluster, "tcp://10.0.0.5:1234", simTime()));
 
   const std::string yaml = R"EOF(
 name: accesslog
@@ -226,7 +246,8 @@ typed_config:
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
   EXPECT_CALL(*file_, write(_));
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
   EXPECT_EQ("[1999-01-01T00:00:00.000Z] \"GET / HTTP/1.1\" 0 - 1 2 3 - \"-\" \"-\" \"-\" \"-\" "
             "\"10.0.0.5:1234\"\n",
             output_);
@@ -258,10 +279,12 @@ typed_config:
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
-  stream_info_.response_code_ = 200;
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  stream_info_.setResponseCode(200);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, WithFilterHit) {
@@ -296,15 +319,18 @@ typed_config:
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
   EXPECT_CALL(*file_, write(_)).Times(3);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
-  stream_info_.response_code_ = 500;
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  stream_info_.setResponseCode(500);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
-  stream_info_.response_code_ = 200;
+  stream_info_.setResponseCode(200);
   stream_info_.end_time_ =
       stream_info_.startTimeMonotonic() + std::chrono::microseconds(1001000000000000);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, RuntimeFilter) {
@@ -326,25 +352,29 @@ typed_config:
   EXPECT_CALL(runtime_.snapshot_, featureEnabled("access_log.test_key", 0, 42, 100))
       .WillOnce(Return(true));
   EXPECT_CALL(*file_, write(_));
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   EXPECT_CALL(context_.api_.random_, random()).WillOnce(Return(43));
   EXPECT_CALL(runtime_.snapshot_, featureEnabled("access_log.test_key", 0, 43, 100))
       .WillOnce(Return(false));
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
-  // Value is taken from x-request-id.
-  request_headers_.addCopy("x-request-id", "000000ff-0000-0000-0000-000000000000");
+  stream_info_.stream_id_provider_ =
+      std::make_shared<StreamInfo::StreamIdProviderImpl>("000000ff-0000-0000-0000-000000000000");
   EXPECT_CALL(runtime_.snapshot_, featureEnabled("access_log.test_key", 0, 55, 100))
       .WillOnce(Return(true));
   EXPECT_CALL(*file_, write(_));
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   EXPECT_CALL(runtime_.snapshot_, featureEnabled("access_log.test_key", 0, 55, 100))
       .WillOnce(Return(false));
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, RuntimeFilterV2) {
@@ -369,25 +399,29 @@ typed_config:
   EXPECT_CALL(runtime_.snapshot_, featureEnabled("access_log.test_key", 5, 42, 10000))
       .WillOnce(Return(true));
   EXPECT_CALL(*file_, write(_));
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   EXPECT_CALL(context_.api_.random_, random()).WillOnce(Return(43));
   EXPECT_CALL(runtime_.snapshot_, featureEnabled("access_log.test_key", 5, 43, 10000))
       .WillOnce(Return(false));
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
-  // Value is taken from x-request-id.
-  request_headers_.addCopy("x-request-id", "000000ff-0000-0000-0000-000000000000");
+  stream_info_.stream_id_provider_ =
+      std::make_shared<StreamInfo::StreamIdProviderImpl>("000000ff-0000-0000-0000-000000000000");
   EXPECT_CALL(runtime_.snapshot_, featureEnabled("access_log.test_key", 5, 255, 10000))
       .WillOnce(Return(true));
   EXPECT_CALL(*file_, write(_));
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   EXPECT_CALL(runtime_.snapshot_, featureEnabled("access_log.test_key", 5, 255, 10000))
       .WillOnce(Return(false));
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, RuntimeFilterV2IndependentRandomness) {
@@ -407,19 +441,21 @@ typed_config:
 
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
-  // Value should not be taken from x-request-id.
-  request_headers_.addCopy("x-request-id", "000000ff-0000-0000-0000-000000000000");
+  stream_info_.stream_id_provider_ =
+      std::make_shared<StreamInfo::StreamIdProviderImpl>("000000ff-0000-0000-0000-000000000000");
   EXPECT_CALL(context_.api_.random_, random()).WillOnce(Return(42));
   EXPECT_CALL(runtime_.snapshot_, featureEnabled("access_log.test_key", 5, 42, 1000000))
       .WillOnce(Return(true));
   EXPECT_CALL(*file_, write(_));
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   EXPECT_CALL(context_.api_.random_, random()).WillOnce(Return(43));
   EXPECT_CALL(runtime_.snapshot_, featureEnabled("access_log.test_key", 5, 43, 1000000))
       .WillOnce(Return(false));
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, PathRewrite) {
@@ -435,7 +471,8 @@ typed_config:
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
   EXPECT_CALL(*file_, write(_));
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
   EXPECT_EQ("[1999-01-01T00:00:00.000Z] \"GET /bar HTTP/1.1\" 0 - 1 2 3 - \"-\" \"-\" \"-\" \"-\" "
             "\"-\"\n",
             output_);
@@ -457,7 +494,8 @@ typed_config:
   stream_info_.health_check_request_ = true;
   EXPECT_CALL(*file_, write(_)).Times(0);
 
-  log->log(&header_map, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&header_map, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, HealthCheckFalse) {
@@ -475,7 +513,8 @@ typed_config:
   Http::TestRequestHeaderMapImpl header_map{};
   EXPECT_CALL(*file_, write(_));
 
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, RequestTracing) {
@@ -495,24 +534,27 @@ typed_config:
   {
     stream_info_.setTraceReason(Tracing::Reason::ServiceForced);
     EXPECT_CALL(*file_, write(_));
-    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+             AccessLog::AccessLogType::NotSet);
   }
 
   {
     stream_info_.setTraceReason(Tracing::Reason::NotTraceable);
     EXPECT_CALL(*file_, write(_)).Times(0);
-    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+             AccessLog::AccessLogType::NotSet);
   }
 
   {
     stream_info_.setTraceReason(Tracing::Reason::Sampling);
     EXPECT_CALL(*file_, write(_)).Times(0);
-    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+             AccessLog::AccessLogType::NotSet);
   }
 }
 
 TEST(AccessLogImplTestCtor, FiltersMissingInOrAndFilter) {
-  NiceMock<Server::Configuration::MockServerFactoryContext> context;
+  NiceMock<Server::Configuration::MockFactoryContext> context;
 
   {
     const std::string yaml = R"EOF(
@@ -562,20 +604,22 @@ typed_config:
   )EOF";
 
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
-  stream_info_.response_code_ = 500;
+  stream_info_.setResponseCode(500);
 
   {
     EXPECT_CALL(*file_, write(_));
     Http::TestRequestHeaderMapImpl header_map{{"user-agent", "NOT/Envoy/HC"}};
 
-    log->log(&header_map, &response_headers_, &response_trailers_, stream_info_);
+    log->log(&header_map, &response_headers_, &response_trailers_, stream_info_,
+             AccessLog::AccessLogType::NotSet);
   }
 
   {
     EXPECT_CALL(*file_, write(_)).Times(0);
     Http::TestRequestHeaderMapImpl header_map{};
     stream_info_.health_check_request_ = true;
-    log->log(&header_map, &response_headers_, &response_trailers_, stream_info_);
+    log->log(&header_map, &response_headers_, &response_trailers_, stream_info_,
+             AccessLog::AccessLogType::NotSet);
   }
 }
 
@@ -598,19 +642,21 @@ typed_config:
   )EOF";
 
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
-  stream_info_.response_code_ = 500;
+  stream_info_.setResponseCode(500);
 
   {
     EXPECT_CALL(*file_, write(_));
     Http::TestRequestHeaderMapImpl header_map{{"user-agent", "NOT/Envoy/HC"}};
 
-    log->log(&header_map, &response_headers_, &response_trailers_, stream_info_);
+    log->log(&header_map, &response_headers_, &response_trailers_, stream_info_,
+             AccessLog::AccessLogType::NotSet);
   }
 
   {
     EXPECT_CALL(*file_, write(_));
     Http::TestRequestHeaderMapImpl header_map{{"user-agent", "Envoy/HC"}};
-    log->log(&header_map, &response_headers_, &response_trailers_, stream_info_);
+    log->log(&header_map, &response_headers_, &response_trailers_, stream_info_,
+             AccessLog::AccessLogType::NotSet);
   }
 }
 
@@ -641,13 +687,14 @@ typed_config:
   )EOF";
 
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
-  stream_info_.response_code_ = 500;
+  stream_info_.setResponseCode(500);
 
   {
     EXPECT_CALL(*file_, write(_));
     Http::TestRequestHeaderMapImpl header_map{};
 
-    log->log(&header_map, &response_headers_, &response_trailers_, stream_info_);
+    log->log(&header_map, &response_headers_, &response_trailers_, stream_info_,
+             AccessLog::AccessLogType::NotSet);
   }
 
   {
@@ -655,7 +702,8 @@ typed_config:
     Http::TestRequestHeaderMapImpl header_map{};
     stream_info_.health_check_request_ = true;
 
-    log->log(&header_map, &response_headers_, &response_trailers_, stream_info_);
+    log->log(&header_map, &response_headers_, &response_trailers_, stream_info_,
+             AccessLog::AccessLogType::NotSet);
   }
 }
 
@@ -677,23 +725,63 @@ duration_filter:
   Http::TestRequestHeaderMapImpl request_headers{{":method", "GET"}, {":path", "/"}};
   Http::TestResponseHeaderMapImpl response_headers;
   Http::TestResponseTrailerMapImpl response_trailers;
-  TestStreamInfo stream_info;
+  NiceMock<MockTimeSystem> time_source;
+  TestStreamInfo stream_info(time_source);
 
   stream_info.end_time_ = stream_info.startTimeMonotonic() + std::chrono::microseconds(100000);
   EXPECT_CALL(runtime.snapshot_, getInteger("key", 1000000)).WillOnce(Return(1));
-  EXPECT_TRUE(filter.evaluate(stream_info, request_headers, response_headers, response_trailers));
+  EXPECT_TRUE(filter.evaluate(stream_info, request_headers, response_headers, response_trailers,
+                              AccessLog::AccessLogType::NotSet));
 
   EXPECT_CALL(runtime.snapshot_, getInteger("key", 1000000)).WillOnce(Return(1000));
-  EXPECT_FALSE(filter.evaluate(stream_info, request_headers, response_headers, response_trailers));
+  EXPECT_FALSE(filter.evaluate(stream_info, request_headers, response_headers, response_trailers,
+                               AccessLog::AccessLogType::NotSet));
 
   stream_info.end_time_ =
       stream_info.startTimeMonotonic() + std::chrono::microseconds(100000001000);
   EXPECT_CALL(runtime.snapshot_, getInteger("key", 1000000)).WillOnce(Return(100000000));
-  EXPECT_TRUE(filter.evaluate(stream_info, request_headers, response_headers, response_trailers));
+  EXPECT_TRUE(filter.evaluate(stream_info, request_headers, response_headers, response_trailers,
+                              AccessLog::AccessLogType::NotSet));
 
   stream_info.end_time_ = stream_info.startTimeMonotonic() + std::chrono::microseconds(10000);
   EXPECT_CALL(runtime.snapshot_, getInteger("key", 1000000)).WillOnce(Return(100000000));
-  EXPECT_FALSE(filter.evaluate(stream_info, request_headers, response_headers, response_trailers));
+  EXPECT_FALSE(filter.evaluate(stream_info, request_headers, response_headers, response_trailers,
+                               AccessLog::AccessLogType::NotSet));
+
+  StreamInfo::MockStreamInfo mock_stream_info;
+  EXPECT_CALL(mock_stream_info, currentDuration()).WillOnce(testing::Return(std::nullopt));
+  EXPECT_FALSE(filter.evaluate(mock_stream_info, request_headers, response_headers,
+                               response_trailers, AccessLog::AccessLogType::NotSet));
+}
+
+TEST(AccessLogFilterTest, MidStreamDuration) {
+  const std::string filter_yaml = R"EOF(
+duration_filter:
+  comparison:
+    op: GE
+    value:
+      default_value: 1000
+    )EOF";
+
+  NiceMock<Runtime::MockLoader> runtime;
+
+  envoy::config::accesslog::v3::AccessLogFilter config;
+  TestUtility::loadFromYaml(filter_yaml, config);
+  DurationFilter filter(config.duration_filter(), runtime);
+  Http::TestRequestHeaderMapImpl request_headers{{":method", "GET"}, {":path", "/"}};
+  Http::TestResponseHeaderMapImpl response_headers;
+  Http::TestResponseTrailerMapImpl response_trailers;
+
+  StreamInfo::MockStreamInfo mock_stream_info;
+  EXPECT_CALL(mock_stream_info, currentDuration())
+      .WillOnce(testing::Return(std::chrono::microseconds(1000)))     // 1ms
+      .WillOnce(testing::Return(std::chrono::microseconds(1000000))); // 1000ms
+
+  EXPECT_FALSE(filter.evaluate(mock_stream_info, request_headers, response_headers,
+                               response_trailers, AccessLog::AccessLogType::NotSet));
+
+  EXPECT_TRUE(filter.evaluate(mock_stream_info, request_headers, response_headers,
+                              response_trailers, AccessLog::AccessLogType::NotSet));
 }
 
 TEST(AccessLogFilterTest, StatusCodeWithRuntimeKey) {
@@ -712,17 +800,20 @@ status_code_filter:
   TestUtility::loadFromYaml(filter_yaml, config);
   StatusCodeFilter filter(config.status_code_filter(), runtime);
 
+  NiceMock<MockTimeSystem> time_source;
   Http::TestRequestHeaderMapImpl request_headers{{":method", "GET"}, {":path", "/"}};
   Http::TestResponseHeaderMapImpl response_headers;
   Http::TestResponseTrailerMapImpl response_trailers;
-  TestStreamInfo info;
+  TestStreamInfo info(time_source);
 
-  info.response_code_ = 400;
+  info.setResponseCode(400);
   EXPECT_CALL(runtime.snapshot_, getInteger("key", 300)).WillOnce(Return(350));
-  EXPECT_TRUE(filter.evaluate(info, request_headers, response_headers, response_trailers));
+  EXPECT_TRUE(filter.evaluate(info, request_headers, response_headers, response_trailers,
+                              AccessLog::AccessLogType::NotSet));
 
   EXPECT_CALL(runtime.snapshot_, getInteger("key", 300)).WillOnce(Return(500));
-  EXPECT_FALSE(filter.evaluate(info, request_headers, response_headers, response_trailers));
+  EXPECT_FALSE(filter.evaluate(info, request_headers, response_headers, response_trailers,
+                               AccessLog::AccessLogType::NotSet));
 }
 
 TEST_F(AccessLogImplTest, StatusCodeLessThan) {
@@ -742,15 +833,17 @@ typed_config:
 
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
-  stream_info_.response_code_ = 499;
+  stream_info_.setResponseCode(499);
   EXPECT_CALL(runtime_.snapshot_, getInteger("hello", 499)).WillOnce(Return(499));
   EXPECT_CALL(*file_, write(_));
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
-  stream_info_.response_code_ = 500;
+  stream_info_.setResponseCode(500);
   EXPECT_CALL(runtime_.snapshot_, getInteger("hello", 499)).WillOnce(Return(499));
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, HeaderPresence) {
@@ -768,11 +861,13 @@ typed_config:
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   request_headers_.addCopy("test-header", "present");
   EXPECT_CALL(*file_, write(_));
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, HeaderExactMatch) {
@@ -782,7 +877,8 @@ filter:
   header_filter:
     header:
       name: test-header
-      exact_match: exact-match-value
+      string_match:
+        exact: exact-match-value
 
 typed_config:
   "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
@@ -792,16 +888,19 @@ typed_config:
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   request_headers_.addCopy("test-header", "exact-match-value");
   EXPECT_CALL(*file_, write(_));
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   request_headers_.remove("test-header");
   request_headers_.addCopy("test-header", "not-exact-match-value");
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, HeaderRegexMatch) {
@@ -811,9 +910,9 @@ filter:
   header_filter:
     header:
       name: test-header
-      safe_regex_match:
-        google_re2: {}
-        regex: "\\d{3}"
+      string_match:
+        safe_regex:
+          regex: "\\d{3}"
 typed_config:
   "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
   path: /dev/null
@@ -822,21 +921,25 @@ typed_config:
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   request_headers_.addCopy("test-header", "123");
   EXPECT_CALL(*file_, write(_));
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   request_headers_.remove("test-header");
   request_headers_.addCopy("test-header", "1234");
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   request_headers_.remove("test-header");
   request_headers_.addCopy("test-header", "123.456");
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, HeaderRangeMatch) {
@@ -857,31 +960,37 @@ typed_config:
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   request_headers_.addCopy("test-header", "-1");
   EXPECT_CALL(*file_, write(_));
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   request_headers_.remove("test-header");
   request_headers_.addCopy("test-header", "0");
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   request_headers_.remove("test-header");
   request_headers_.addCopy("test-header", "somestring");
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   request_headers_.remove("test-header");
   request_headers_.addCopy("test-header", "10.9");
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   request_headers_.remove("test-header");
   request_headers_.addCopy("test-header", "-1somestring");
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, ResponseFlagFilterAnyFlag) {
@@ -897,11 +1006,13 @@ typed_config:
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   stream_info_.setResponseFlag(StreamInfo::ResponseFlag::NoRouteFound);
   EXPECT_CALL(*file_, write(_));
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, ResponseFlagFilterSpecificFlag) {
@@ -919,15 +1030,18 @@ typed_config:
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   stream_info_.setResponseFlag(StreamInfo::ResponseFlag::NoRouteFound);
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   stream_info_.setResponseFlag(StreamInfo::ResponseFlag::UpstreamOverflow);
   EXPECT_CALL(*file_, write(_));
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, ResponseFlagFilterSeveralFlags) {
@@ -946,15 +1060,18 @@ typed_config:
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   stream_info_.setResponseFlag(StreamInfo::ResponseFlag::NoRouteFound);
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 
   stream_info_.setResponseFlag(StreamInfo::ResponseFlag::UpstreamOverflow);
   EXPECT_CALL(*file_, write(_));
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, ResponseFlagFilterAllFlagsInPGV) {
@@ -988,49 +1105,23 @@ filter:
       - DT
       - UPE
       - NC
+      - OM
 typed_config:
   "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
   path: /dev/null
   )EOF";
 
-  static_assert(StreamInfo::ResponseFlag::LastFlag == 0x1000000,
-                "A flag has been added. Fix this code.");
-
-  const std::vector<StreamInfo::ResponseFlag> all_response_flags = {
-      StreamInfo::ResponseFlag::FailedLocalHealthCheck,
-      StreamInfo::ResponseFlag::NoHealthyUpstream,
-      StreamInfo::ResponseFlag::UpstreamRequestTimeout,
-      StreamInfo::ResponseFlag::LocalReset,
-      StreamInfo::ResponseFlag::UpstreamRemoteReset,
-      StreamInfo::ResponseFlag::UpstreamConnectionFailure,
-      StreamInfo::ResponseFlag::UpstreamConnectionTermination,
-      StreamInfo::ResponseFlag::UpstreamOverflow,
-      StreamInfo::ResponseFlag::NoRouteFound,
-      StreamInfo::ResponseFlag::DelayInjected,
-      StreamInfo::ResponseFlag::FaultInjected,
-      StreamInfo::ResponseFlag::RateLimited,
-      StreamInfo::ResponseFlag::UnauthorizedExternalService,
-      StreamInfo::ResponseFlag::RateLimitServiceError,
-      StreamInfo::ResponseFlag::DownstreamConnectionTermination,
-      StreamInfo::ResponseFlag::UpstreamRetryLimitExceeded,
-      StreamInfo::ResponseFlag::StreamIdleTimeout,
-      StreamInfo::ResponseFlag::InvalidEnvoyRequestHeaders,
-      StreamInfo::ResponseFlag::DownstreamProtocolError,
-      StreamInfo::ResponseFlag::UpstreamMaxStreamDurationReached,
-      StreamInfo::ResponseFlag::ResponseFromCacheFilter,
-      StreamInfo::ResponseFlag::NoFilterConfigFound,
-      StreamInfo::ResponseFlag::DurationTimeout,
-      StreamInfo::ResponseFlag::UpstreamProtocolError,
-      StreamInfo::ResponseFlag::NoClusterFound,
-  };
-
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
-  for (const auto response_flag : all_response_flags) {
-    TestStreamInfo stream_info;
+  for (const auto& [flag_strings, response_flag] :
+       StreamInfo::ResponseFlagUtils::ALL_RESPONSE_STRINGS_FLAGS) {
+    UNREFERENCED_PARAMETER(flag_strings);
+
+    TestStreamInfo stream_info(time_source_);
     stream_info.setResponseFlag(response_flag);
     EXPECT_CALL(*file_, write(_));
-    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info);
+    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info,
+             AccessLog::AccessLogType::NotSet);
   }
 }
 
@@ -1105,6 +1196,20 @@ typed_config:
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 }
 
+TEST_F(AccessLogImplTest, GrpcStatusFormatterUnsupportedFormat) {
+  const std::string yaml = R"EOF(
+name: accesslog
+typed_config:
+  "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+  path: /dev/null
+  log_format:
+    text_format_source:
+      inline_string: "%GRPC_STATUS(NOT_SUPPORTED)%\n"
+  )EOF";
+  EXPECT_THROW(AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_),
+               EnvoyException);
+}
+
 TEST_F(AccessLogImplTest, ValidGrpcStatusMessage) {
   const std::string yaml = R"EOF(
 name: accesslog
@@ -1113,37 +1218,41 @@ typed_config:
   path: /dev/null
   log_format:
     text_format_source:
-      inline_string: "%GRPC_STATUS%\n"
+      inline_string: "%GRPC_STATUS% %GRPC_STATUS_NUMBER% %GRPC_STATUS()% %GRPC_STATUS(CAMEL_STRING)% %GRPC_STATUS(SNAKE_STRING)% %GRPC_STATUS(NUMBER)%\n"
   )EOF";
 
+  request_headers_ = {{":method", "GET"}, {":path", "/"}, {"content-type", "application/grpc"}};
   InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
   {
     EXPECT_CALL(*file_, write(_));
     response_trailers_.addCopy(Http::Headers::get().GrpcStatus, "0");
-    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
-    EXPECT_EQ("OK\n", output_);
+    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+             AccessLog::AccessLogType::NotSet);
+    EXPECT_EQ("OK 0 OK OK OK 0\n", output_);
     response_trailers_.remove(Http::Headers::get().GrpcStatus);
   }
   {
     InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
     EXPECT_CALL(*file_, write(_));
     response_headers_.addCopy(Http::Headers::get().GrpcStatus, "1");
-    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
-    EXPECT_EQ("Canceled\n", output_);
+    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+             AccessLog::AccessLogType::NotSet);
+    EXPECT_EQ("Canceled 1 Canceled Canceled CANCELLED 1\n", output_);
     response_headers_.remove(Http::Headers::get().GrpcStatus);
   }
   {
     InstanceSharedPtr log = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
     EXPECT_CALL(*file_, write(_));
     response_headers_.addCopy(Http::Headers::get().GrpcStatus, "-1");
-    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
-    EXPECT_EQ("-1\n", output_);
+    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+             AccessLog::AccessLogType::NotSet);
+    EXPECT_EQ("-1 -1 -1 -1 -1 -1\n", output_);
     response_headers_.remove(Http::Headers::get().GrpcStatus);
   }
 }
 
 TEST_F(AccessLogImplTest, GrpcStatusFilterValues) {
-  const std::string yaml_template = R"EOF(
+  constexpr absl::string_view yaml_template = R"EOF(
 name: accesslog
 filter:
   grpc_status_filter:
@@ -1168,7 +1277,8 @@ typed_config:
     EXPECT_CALL(*file_, write(_));
 
     response_trailers_.addCopy(Http::Headers::get().GrpcStatus, std::to_string(i));
-    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+             AccessLog::AccessLogType::NotSet);
     response_trailers_.remove(Http::Headers::get().GrpcStatus);
   }
 }
@@ -1207,11 +1317,12 @@ typed_config:
   response_trailers_.addCopy(Http::Headers::get().GrpcStatus, "1");
 
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, GrpcStatusFilterHttpCodes) {
-  const std::string yaml_template = R"EOF(
+  constexpr absl::string_view yaml_template = R"EOF(
 name: accesslog
 filter:
   grpc_status_filter:
@@ -1231,14 +1342,15 @@ typed_config:
       {"PERMISSION_DENIED", 403}, {"UNAVAILABLE", 429}, {"UNIMPLEMENTED", 404},
       {"UNAVAILABLE", 502},       {"UNAVAILABLE", 503}, {"UNAVAILABLE", 504}};
 
-  for (const auto& pair : statusMapping) {
-    stream_info_.response_code_ = pair.second;
+  for (const auto& [response_string, response_code] : statusMapping) {
+    stream_info_.setResponseCode(response_code);
 
     const InstanceSharedPtr log = AccessLogFactory::fromProto(
-        parseAccessLogFromV3Yaml(fmt::format(yaml_template, pair.first)), context_);
+        parseAccessLogFromV3Yaml(fmt::format(yaml_template, response_string)), context_);
 
     EXPECT_CALL(*file_, write(_));
-    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+             AccessLog::AccessLogType::NotSet);
   }
 }
 
@@ -1258,7 +1370,8 @@ typed_config:
       AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
   EXPECT_CALL(*file_, write(_));
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, GrpcStatusFilterExclude) {
@@ -1281,7 +1394,8 @@ typed_config:
     EXPECT_CALL(*file_, write(_)).Times(i == 0 ? 0 : 1);
 
     response_trailers_.addCopy(Http::Headers::get().GrpcStatus, std::to_string(i));
-    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+    log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+             AccessLog::AccessLogType::NotSet);
     response_trailers_.remove(Http::Headers::get().GrpcStatus);
   }
 }
@@ -1305,7 +1419,8 @@ typed_config:
   response_trailers_.addCopy(Http::Headers::get().GrpcStatus, "0");
 
   EXPECT_CALL(*file_, write(_));
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, GrpcStatusFilterHeader) {
@@ -1326,7 +1441,96 @@ typed_config:
   EXPECT_CALL(*file_, write(_));
 
   response_headers_.addCopy(Http::Headers::get().GrpcStatus, "0");
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::NotSet);
+}
+
+TEST_F(AccessLogImplTest, LogTypeFilterUnsupportedValue) {
+  const std::string yaml = R"EOF(
+name: accesslog
+filter:
+  log_type_filter:
+    types:
+      - NOT_A_VALID_CODE
+typed_config:
+  "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+  path: /dev/null
+  )EOF";
+
+  EXPECT_THROW_WITH_REGEX(AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_),
+                          EnvoyException, "NOT_A_VALID_CODE");
+}
+
+TEST_F(AccessLogImplTest, LogTypeFilterBlock) {
+  const std::string yaml = R"EOF(
+name: accesslog
+filter:
+  log_type_filter:
+    types:
+      - TcpUpstreamConnected
+      - DownstreamEnd
+typed_config:
+  "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+  path: /dev/null
+  )EOF";
+
+  const InstanceSharedPtr log =
+      AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
+
+  EXPECT_CALL(*file_, write(_)).Times(0);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::TcpConnectionEnd); // Blocked
+}
+
+TEST_F(AccessLogImplTest, LogTypeFilterAllow) {
+  const std::string yaml = R"EOF(
+name: accesslog
+filter:
+  log_type_filter:
+    types:
+      - TcpUpstreamConnected
+      - DownstreamEnd
+typed_config:
+  "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+  path: /dev/null
+  )EOF";
+
+  const InstanceSharedPtr log =
+      AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
+
+  EXPECT_CALL(*file_, write(_)).Times(2);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::TcpUpstreamConnected); // Allowed
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::DownstreamEnd); // Allowed
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::UpstreamPoolReady); // Blocked
+}
+
+TEST_F(AccessLogImplTest, LogTypeFilterExclude) {
+  const std::string yaml = R"EOF(
+name: accesslog
+filter:
+  log_type_filter:
+    exclude: true
+    types:
+      - TcpUpstreamConnected
+      - DownstreamEnd
+typed_config:
+  "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+  path: /dev/null
+  )EOF";
+
+  const InstanceSharedPtr log =
+      AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
+
+  EXPECT_CALL(*file_, write(_));
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::TcpUpstreamConnected); // Blocked
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::DownstreamEnd); // Blocked
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+           AccessLog::AccessLogType::UpstreamPoolReady); // Allowed
 }
 
 TEST_F(AccessLogImplTest, MetadataFilter) {
@@ -1348,7 +1552,7 @@ typed_config:
   path: /dev/null
   )EOF";
 
-  TestStreamInfo stream_info;
+  TestStreamInfo stream_info(time_source_);
   ProtobufWkt::Struct metadata_val;
   auto& fields_a = *metadata_val.mutable_fields();
   auto& struct_b = *fields_a["a"].mutable_struct_value();
@@ -1364,7 +1568,8 @@ typed_config:
 
   EXPECT_CALL(*file_, write(_));
 
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info,
+           AccessLog::AccessLogType::NotSet);
   fields_c["c"].set_bool_value(false);
 
   EXPECT_CALL(*file_, write(_)).Times(0);
@@ -1384,7 +1589,7 @@ typed_config:
   path: /dev/null
   )EOF";
 
-  TestStreamInfo stream_info;
+  TestStreamInfo stream_info(time_source_);
   ProtobufWkt::Struct metadata_val;
   stream_info.setDynamicMetadata("some.namespace", metadata_val);
 
@@ -1393,7 +1598,8 @@ typed_config:
 
   // If no matcher is set, then expect no logs.
   EXPECT_CALL(*file_, write(_)).Times(0);
-  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info);
+  log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info,
+           AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, MetadataFilterNoKey) {
@@ -1431,7 +1637,7 @@ typed_config:
   path: /dev/null
   )EOF";
 
-  TestStreamInfo stream_info;
+  TestStreamInfo stream_info(time_source_);
   ProtobufWkt::Struct metadata_val;
   auto& fields_a = *metadata_val.mutable_fields();
   auto& struct_b = *fields_a["a"].mutable_struct_value();
@@ -1444,13 +1650,15 @@ typed_config:
       AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(default_false_yaml), context_);
   EXPECT_CALL(*file_, write(_)).Times(0);
 
-  default_false_log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info);
+  default_false_log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info,
+                         AccessLog::AccessLogType::NotSet);
 
   const InstanceSharedPtr default_true_log =
       AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(default_true_yaml), context_);
   EXPECT_CALL(*file_, write(_));
 
-  default_true_log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info);
+  default_true_log->log(&request_headers_, &response_headers_, &response_trailers_, stream_info,
+                        AccessLog::AccessLogType::NotSet);
 }
 
 class TestHeaderFilterFactory : public ExtensionFilterFactory {
@@ -1458,9 +1666,9 @@ public:
   ~TestHeaderFilterFactory() override = default;
 
   FilterPtr createFilter(const envoy::config::accesslog::v3::ExtensionFilter& config,
-                         Runtime::Loader&, Random::RandomGenerator&) override {
+                         Server::Configuration::CommonFactoryContext& context) override {
     auto factory_config = Config::Utility::translateToFactoryConfig(
-        config, Envoy::ProtobufMessage::getNullValidationVisitor(), *this);
+        config, context.messageValidationVisitor(), *this);
     const auto& header_config =
         TestUtility::downcastAndValidate<const envoy::config::accesslog::v3::HeaderFilter&>(
             *factory_config);
@@ -1495,11 +1703,13 @@ typed_config:
   InstanceSharedPtr logger = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
   EXPECT_CALL(*file_, write(_)).Times(0);
-  logger->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  logger->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+              AccessLog::AccessLogType::NotSet);
 
   request_headers_.addCopy("test-header", "foo/bar");
   EXPECT_CALL(*file_, write(_));
-  logger->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  logger->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+              AccessLog::AccessLogType::NotSet);
 }
 
 /**
@@ -1511,7 +1721,8 @@ public:
 
   // AccessLog::Filter
   bool evaluate(const StreamInfo::StreamInfo&, const Http::RequestHeaderMap&,
-                const Http::ResponseHeaderMap&, const Http::ResponseTrailerMap&) const override {
+                const Http::ResponseHeaderMap&, const Http::ResponseTrailerMap&,
+                AccessLogType) const override {
     if (current_++ == 0) {
       return true;
     }
@@ -1534,9 +1745,9 @@ public:
   ~SampleExtensionFilterFactory() override = default;
 
   FilterPtr createFilter(const envoy::config::accesslog::v3::ExtensionFilter& config,
-                         Runtime::Loader&, Random::RandomGenerator&) override {
+                         Server::Configuration::CommonFactoryContext& context) override {
     auto factory_config = Config::Utility::translateToFactoryConfig(
-        config, Envoy::ProtobufMessage::getNullValidationVisitor(), *this);
+        config, context.messageValidationVisitor(), *this);
 
     ProtobufWkt::Struct struct_config =
         *dynamic_cast<const ProtobufWkt::Struct*>(factory_config.get());
@@ -1572,13 +1783,16 @@ typed_config:
   InstanceSharedPtr logger = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
   // For rate=5 expect 1st request to be recorded, 2nd-5th skipped, and 6th recorded.
   EXPECT_CALL(*file_, write(_));
-  logger->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  logger->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+              AccessLog::AccessLogType::NotSet);
   for (int i = 0; i <= 3; ++i) {
     EXPECT_CALL(*file_, write(_)).Times(0);
-    logger->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+    logger->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+                AccessLog::AccessLogType::NotSet);
   }
   EXPECT_CALL(*file_, write(_));
-  logger->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_);
+  logger->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+              AccessLog::AccessLogType::NotSet);
 }
 
 TEST_F(AccessLogImplTest, UnregisteredExtensionFilter) {
@@ -1617,44 +1831,74 @@ typed_config:
   }
 }
 
-// Test that the deprecated extension names still function.
-TEST_F(AccessLogImplTest, DEPRECATED_FEATURE_TEST(DeprecatedExtensionFilterName)) {
-  {
-    envoy::config::accesslog::v3::AccessLog config;
-    config.set_name("envoy.access_loggers.file");
+#if defined(USE_CEL_PARSER)
+TEST_F(AccessLogImplTest, CelExtensionFilter) {
+  const std::string yaml = R"EOF(
+name: accesslog
+filter:
+  extension_filter:
+    name: cel_extension_filter
+    typed_config:
+      "@type": type.googleapis.com/envoy.extensions.access_loggers.filters.cel.v3.ExpressionFilter
+      expression: "(request.headers['log'] == 'true') && (response.code >= 400)"
+typed_config:
+  "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+  path: /dev/null
+  )EOF";
 
-    EXPECT_NO_THROW(
-        Config::Utility::getAndCheckFactory<Server::Configuration::AccessLogInstanceFactory>(
-            config));
-  }
+  InstanceSharedPtr logger = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
 
-  {
-    envoy::config::accesslog::v3::AccessLog config;
-    config.set_name("envoy.file_access_log");
+  request_headers_.addCopy("log", "true");
+  stream_info_.setResponseCode(404);
+  EXPECT_CALL(*file_, write(_));
+  logger->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+              AccessLog::AccessLogType::NotSet);
 
-    EXPECT_NO_THROW(
-        Config::Utility::getAndCheckFactory<Server::Configuration::AccessLogInstanceFactory>(
-            config));
-  }
-
-  {
-    envoy::config::accesslog::v3::AccessLog config;
-    config.set_name("envoy.http_grpc_access_log");
-
-    EXPECT_NO_THROW(
-        Config::Utility::getAndCheckFactory<Server::Configuration::AccessLogInstanceFactory>(
-            config));
-  }
-
-  {
-    envoy::config::accesslog::v3::AccessLog config;
-    config.set_name("envoy.tcp_grpc_access_log");
-
-    EXPECT_NO_THROW(
-        Config::Utility::getAndCheckFactory<Server::Configuration::AccessLogInstanceFactory>(
-            config));
-  }
+  request_headers_.remove("log");
+  EXPECT_CALL(*file_, write(_)).Times(0);
+  logger->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+              AccessLog::AccessLogType::NotSet);
 }
+
+TEST_F(AccessLogImplTest, CelExtensionFilterExpressionError) {
+  const std::string yaml = R"EOF(
+name: accesslog
+filter:
+  extension_filter:
+    name: cel_extension_filter
+    typed_config:
+      "@type": type.googleapis.com/envoy.extensions.access_loggers.filters.cel.v3.ExpressionFilter
+      expression: "foo['test']"
+typed_config:
+  "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+  path: /dev/null
+  )EOF";
+
+  InstanceSharedPtr logger = AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_);
+
+  EXPECT_CALL(*file_, write(_)).Times(0);
+  logger->log(&request_headers_, &response_headers_, &response_trailers_, stream_info_,
+              AccessLog::AccessLogType::NotSet);
+}
+
+TEST_F(AccessLogImplTest, CelExtensionFilterExpressionUnparsable) {
+  const std::string yaml = R"EOF(
+name: accesslog
+filter:
+  extension_filter:
+    name: cel_extension_filter
+    typed_config:
+      "@type": type.googleapis.com/envoy.extensions.access_loggers.filters.cel.v3.ExpressionFilter
+      expression: "(+++"
+typed_config:
+  "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+  path: /dev/null
+  )EOF";
+
+  EXPECT_THROW_WITH_REGEX(AccessLogFactory::fromProto(parseAccessLogFromV3Yaml(yaml), context_),
+                          EnvoyException, "Not able to parse filter expression: .*");
+}
+#endif // USE_CEL_PARSER
 
 } // namespace
 } // namespace AccessLog

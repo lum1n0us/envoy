@@ -9,22 +9,6 @@ licenses(["notice"])  # Apache 2
 envoy_package()
 
 envoy_cc_library(
-    name = "json_internal_legacy_lib",
-    srcs = ["json_internal_legacy.cc"],
-    hdrs = ["json_internal_legacy.h"],
-    external_deps = [
-        "rapidjson",
-    ],
-    deps = [
-        "//include/envoy/json:json_object_interface",
-        "//source/common/common:assert_lib",
-        "//source/common/common:hash_lib",
-        "//source/common/common:utility_lib",
-        "//source/common/protobuf:utility_lib",
-    ],
-)
-
-envoy_cc_library(
     name = "json_internal_lib",
     srcs = ["json_internal.cc"],
     hdrs = ["json_internal.h"],
@@ -32,7 +16,7 @@ envoy_cc_library(
         "json",
     ],
     deps = [
-        "//include/envoy/json:json_object_interface",
+        "//envoy/json:json_object_interface",
         "//source/common/common:assert_lib",
         "//source/common/common:hash_lib",
         "//source/common/common:utility_lib",
@@ -45,9 +29,31 @@ envoy_cc_library(
     srcs = ["json_loader.cc"],
     hdrs = ["json_loader.h"],
     deps = [
-        ":json_internal_legacy_lib",
         ":json_internal_lib",
-        "//include/envoy/json:json_object_interface",
+        "//envoy/json:json_object_interface",
         "//source/common/runtime:runtime_features_lib",
+    ],
+)
+
+envoy_cc_library(
+    name = "json_sanitizer_lib",
+    srcs = ["json_sanitizer.cc"],
+    hdrs = ["json_sanitizer.h"],
+    deps = [
+        ":json_internal_lib",
+        "//source/common/common:assert_lib",
+        "//source/common/common:thread_lib",
+    ],
+)
+
+envoy_cc_library(
+    name = "json_streamer_lib",
+    srcs = ["json_streamer.cc"],
+    hdrs = ["json_streamer.h"],
+    deps = [
+        ":json_sanitizer_lib",
+        "//envoy/buffer:buffer_interface",
+        "//source/common/buffer:buffer_util_lib",
+        "//source/common/common:assert_lib",
     ],
 )

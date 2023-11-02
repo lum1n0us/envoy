@@ -1,4 +1,4 @@
-#include "extensions/access_loggers/file/config.h"
+#include "source/extensions/access_loggers/file/config.h"
 
 #include <memory>
 
@@ -7,19 +7,25 @@
 #include "envoy/registry/registry.h"
 #include "envoy/server/filter_config.h"
 
-#include "common/common/logger.h"
-#include "common/config/utility.h"
-#include "common/formatter/substitution_format_string.h"
-#include "common/formatter/substitution_formatter.h"
-#include "common/protobuf/protobuf.h"
-
-#include "extensions/access_loggers/common/file_access_log_impl.h"
-#include "extensions/access_loggers/well_known_names.h"
+#include "source/common/common/logger.h"
+#include "source/common/config/utility.h"
+#include "source/common/formatter/substitution_format_string.h"
+#include "source/common/formatter/substitution_formatter.h"
+#include "source/common/protobuf/protobuf.h"
+#include "source/extensions/access_loggers/common/file_access_log_impl.h"
 
 namespace Envoy {
 namespace Extensions {
 namespace AccessLoggers {
 namespace File {
+
+AccessLog::InstanceSharedPtr FileAccessLogFactory::createAccessLogInstance(
+    const Protobuf::Message& config, AccessLog::FilterPtr&& filter,
+    Server::Configuration::ListenerAccessLogFactoryContext& context) {
+  return createAccessLogInstance(
+      config, std::move(filter),
+      static_cast<Server::Configuration::CommonFactoryContext&>(context));
+}
 
 AccessLog::InstanceSharedPtr FileAccessLogFactory::createAccessLogInstance(
     const Protobuf::Message& config, AccessLog::FilterPtr&& filter,
@@ -32,33 +38,31 @@ AccessLog::InstanceSharedPtr FileAccessLogFactory::createAccessLogInstance(
   switch (fal_config.access_log_format_case()) {
   case envoy::extensions::access_loggers::file::v3::FileAccessLog::AccessLogFormatCase::kFormat:
     if (fal_config.format().empty()) {
-      formatter = Formatter::SubstitutionFormatUtils::defaultSubstitutionFormatter();
+      formatter = Formatter::HttpSubstitutionFormatUtils::defaultSubstitutionFormatter();
     } else {
       envoy::config::core::v3::SubstitutionFormatString sff_config;
       sff_config.mutable_text_format_source()->set_inline_string(fal_config.format());
-      formatter =
-          Formatter::SubstitutionFormatStringUtils::fromProtoConfig(sff_config, context.api());
+      formatter = Formatter::SubstitutionFormatStringUtils::fromProtoConfig(sff_config, context);
     }
     break;
   case envoy::extensions::access_loggers::file::v3::FileAccessLog::AccessLogFormatCase::kJsonFormat:
     formatter = Formatter::SubstitutionFormatStringUtils::createJsonFormatter(
-        fal_config.json_format(), false, false);
+        fal_config.json_format(), false, false, false);
     break;
   case envoy::extensions::access_loggers::file::v3::FileAccessLog::AccessLogFormatCase::
       kTypedJsonFormat: {
     envoy::config::core::v3::SubstitutionFormatString sff_config;
     *sff_config.mutable_json_format() = fal_config.typed_json_format();
-    formatter =
-        Formatter::SubstitutionFormatStringUtils::fromProtoConfig(sff_config, context.api());
+    formatter = Formatter::SubstitutionFormatStringUtils::fromProtoConfig(sff_config, context);
     break;
   }
   case envoy::extensions::access_loggers::file::v3::FileAccessLog::AccessLogFormatCase::kLogFormat:
-    formatter = Formatter::SubstitutionFormatStringUtils::fromProtoConfig(fal_config.log_format(),
-                                                                          context.api());
+    formatter =
+        Formatter::SubstitutionFormatStringUtils::fromProtoConfig(fal_config.log_format(), context);
     break;
   case envoy::extensions::access_loggers::file::v3::FileAccessLog::AccessLogFormatCase::
       ACCESS_LOG_FORMAT_NOT_SET:
-    formatter = Formatter::SubstitutionFormatUtils::defaultSubstitutionFormatter();
+    formatter = Formatter::HttpSubstitutionFormatUtils::defaultSubstitutionFormatter();
     break;
   }
 
@@ -72,13 +76,13 @@ ProtobufTypes::MessagePtr FileAccessLogFactory::createEmptyConfigProto() {
       new envoy::extensions::access_loggers::file::v3::FileAccessLog()};
 }
 
-std::string FileAccessLogFactory::name() const { return AccessLogNames::get().File; }
+std::string FileAccessLogFactory::name() const { return "envoy.access_loggers.file"; }
 
 /**
  * Static registration for the file access log. @see RegisterFactory.
  */
-REGISTER_FACTORY(FileAccessLogFactory,
-                 Server::Configuration::AccessLogInstanceFactory){"envoy.file_access_log"};
+LEGACY_REGISTER_FACTORY(FileAccessLogFactory, Server::Configuration::AccessLogInstanceFactory,
+                        "envoy.file_access_log");
 
 } // namespace File
 } // namespace AccessLoggers

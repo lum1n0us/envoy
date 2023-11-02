@@ -5,7 +5,7 @@
 #include "envoy/config/typed_config.h"
 #include "envoy/registry/registry.h"
 
-#include "common/formatter/substitution_formatter.h"
+#include "source/common/formatter/substitution_formatter.h"
 
 namespace Envoy {
 namespace Formatter {
@@ -13,23 +13,27 @@ namespace Formatter {
 class TestFormatter : public FormatterProvider {
 public:
   // FormatterProvider
-  absl::optional<std::string> format(const Http::RequestHeaderMap&, const Http::ResponseHeaderMap&,
-                                     const Http::ResponseTrailerMap&, const StreamInfo::StreamInfo&,
-                                     absl::string_view) const override;
-  ProtobufWkt::Value formatValue(const Http::RequestHeaderMap&, const Http::ResponseHeaderMap&,
-                                 const Http::ResponseTrailerMap&, const StreamInfo::StreamInfo&,
-                                 absl::string_view) const override;
+  absl::optional<std::string>
+  formatWithContext(const HttpFormatterContext& context,
+                    const StreamInfo::StreamInfo& stream_info) const override;
+
+  ProtobufWkt::Value
+  formatValueWithContext(const HttpFormatterContext& context,
+                         const StreamInfo::StreamInfo& stream_info) const override;
 };
 
 class TestCommandParser : public CommandParser {
 public:
-  FormatterProviderPtr parse(const std::string& token, size_t, size_t) const override;
+  FormatterProviderPtr parse(const std::string& command, const std::string& subcommand,
+                             absl::optional<size_t>& max_length) const override;
 };
 
 class TestCommandFactory : public CommandParserFactory {
 public:
-  CommandParserPtr createCommandParserFromProto(const Protobuf::Message&) override;
-  std::string configType() override;
+  CommandParserPtr
+  createCommandParserFromProto(const Protobuf::Message&,
+                               Server::Configuration::CommonFactoryContext&) override;
+  std::set<std::string> configTypes() override;
   ProtobufTypes::MessagePtr createEmptyConfigProto() override;
   std::string name() const override;
 };
@@ -37,31 +41,37 @@ public:
 class AdditionalFormatter : public FormatterProvider {
 public:
   // FormatterProvider
-  absl::optional<std::string> format(const Http::RequestHeaderMap&, const Http::ResponseHeaderMap&,
-                                     const Http::ResponseTrailerMap&, const StreamInfo::StreamInfo&,
-                                     absl::string_view) const override;
-  ProtobufWkt::Value formatValue(const Http::RequestHeaderMap&, const Http::ResponseHeaderMap&,
-                                 const Http::ResponseTrailerMap&, const StreamInfo::StreamInfo&,
-                                 absl::string_view) const override;
+  absl::optional<std::string>
+  formatWithContext(const HttpFormatterContext& context,
+                    const StreamInfo::StreamInfo& stream_info) const override;
+
+  ProtobufWkt::Value
+  formatValueWithContext(const HttpFormatterContext& context,
+                         const StreamInfo::StreamInfo& stream_info) const override;
 };
 
 class AdditionalCommandParser : public CommandParser {
 public:
-  FormatterProviderPtr parse(const std::string& token, size_t, size_t) const override;
+  FormatterProviderPtr parse(const std::string& command, const std::string& subcommand,
+                             absl::optional<size_t>& max_length) const override;
 };
 
 class AdditionalCommandFactory : public CommandParserFactory {
 public:
-  CommandParserPtr createCommandParserFromProto(const Protobuf::Message&) override;
-  std::string configType() override;
+  CommandParserPtr
+  createCommandParserFromProto(const Protobuf::Message&,
+                               Server::Configuration::CommonFactoryContext&) override;
+  std::set<std::string> configTypes() override;
   ProtobufTypes::MessagePtr createEmptyConfigProto() override;
   std::string name() const override;
 };
 
 class FailCommandFactory : public CommandParserFactory {
 public:
-  CommandParserPtr createCommandParserFromProto(const Protobuf::Message&) override;
-  std::string configType() override;
+  CommandParserPtr
+  createCommandParserFromProto(const Protobuf::Message&,
+                               Server::Configuration::CommonFactoryContext&) override;
+  std::set<std::string> configTypes() override;
   ProtobufTypes::MessagePtr createEmptyConfigProto() override;
   std::string name() const override;
 };

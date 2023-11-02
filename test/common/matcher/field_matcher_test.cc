@@ -1,7 +1,7 @@
 #include "envoy/matcher/matcher.h"
 
-#include "common/matcher/field_matcher.h"
-#include "common/matcher/matcher.h"
+#include "source/common/matcher/field_matcher.h"
+#include "source/common/matcher/matcher.h"
 
 #include "test/common/matcher/test_utility.h"
 
@@ -19,7 +19,7 @@ public:
     matchers.reserve(values.size());
     for (const auto& v : values) {
       matchers.emplace_back(std::make_unique<SingleFieldMatcher<TestData>>(
-          std::make_unique<TestInput>(DataInputGetResult{v.second, absl::nullopt}),
+          std::make_unique<TestInput>(DataInputGetResult{v.second, absl::monostate()}),
           std::make_unique<BoolMatcher>(v.first)));
     }
 
@@ -58,9 +58,7 @@ TEST_F(FieldMatcherTest, SingleFieldMatcher) {
       createSingleMatcher("foo", [](auto v) { return v == "foo"; })->match(TestData()).result());
   EXPECT_FALSE(
       createSingleMatcher("foo", [](auto v) { return v != "foo"; })->match(TestData()).result());
-  EXPECT_TRUE(createSingleMatcher(absl::nullopt, [](auto v) { return v == absl::nullopt; })
-                  ->match(TestData())
-                  .result());
+
   EXPECT_FALSE(createSingleMatcher(absl::nullopt, [](auto v) { return v == "foo"; })
                    ->match(TestData())
                    .result());
@@ -101,6 +99,23 @@ TEST_F(FieldMatcherTest, AllMatcher) {
               {std::make_pair(false,
                               DataInputGetResult::DataAvailability::MoreDataMightBeAvailable),
                std::make_pair(false, DataInputGetResult::DataAvailability::AllDataAvailable)}))
+          .match(TestData())
+          .match_state_,
+      MatchState::UnableToMatch);
+}
+
+TEST_F(FieldMatcherTest, NotMatcher) {
+  EXPECT_TRUE(NotFieldMatcher<TestData>(
+                  std::make_unique<AllFieldMatcher<TestData>>(createMatchers({true, false})))
+                  .match(TestData())
+                  .result());
+
+  EXPECT_EQ(
+      NotFieldMatcher<TestData>(
+          std::make_unique<AllFieldMatcher<TestData>>(createMatchers(
+              {std::make_pair(false,
+                              DataInputGetResult::DataAvailability::MoreDataMightBeAvailable),
+               std::make_pair(false, DataInputGetResult::DataAvailability::AllDataAvailable)})))
           .match(TestData())
           .match_state_,
       MatchState::UnableToMatch);

@@ -13,16 +13,23 @@ envoy_cc_library(
     srcs = ["conn_pool.cc"],
     hdrs = ["conn_pool.h"],
     deps = [
-        ":quic_client_connection_factory_lib",
-        "//include/envoy/event:dispatcher_interface",
-        "//include/envoy/upstream:upstream_interface",
+        "//envoy/event:dispatcher_interface",
+        "//envoy/http:persistent_quic_info_interface",
+        "//envoy/upstream:upstream_interface",
         "//source/common/http:codec_client_lib",
         "//source/common/http:conn_pool_base_lib",
         "//source/common/quic:client_connection_factory_lib",
+        "@com_github_google_quiche//:quic_core_deterministic_connection_id_generator_lib",
     ],
 )
 
 envoy_cc_library(
-    name = "quic_client_connection_factory_lib",
-    hdrs = ["quic_client_connection_factory.h"],
+    name = "codec_stats_lib",
+    hdrs = ["codec_stats.h"],
+    deps = [
+        "//envoy/http:header_validator_interface",
+        "//envoy/stats:stats_interface",
+        "//envoy/stats:stats_macros",
+        "//source/common/common:thread_lib",
+    ],
 )

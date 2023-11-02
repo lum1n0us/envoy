@@ -1,8 +1,7 @@
 #include "envoy/extensions/filters/http/jwt_authn/v3/config.pb.h"
 
-#include "common/protobuf/utility.h"
-
-#include "extensions/filters/http/jwt_authn/extractor.h"
+#include "source/common/protobuf/utility.h"
+#include "source/extensions/filters/http/jwt_authn/extractor.h"
 
 #include "test/extensions/filters/http/jwt_authn/test_common.h"
 #include "test/test_common/utility.h"
@@ -55,6 +54,15 @@ providers:
     from_headers:
       - name: prefix-header
         value_prefix: '"CCCDDD"'
+  provider9:
+    issuer: issuer9
+    from_cookies:
+      - token-cookie
+      - token-cookie-2
+  provider10:
+    issuer: issuer10
+    from_cookies:
+      - token-cookie-3
 )";
 
 class ExtractorTest : public testing::Test {
@@ -110,6 +118,11 @@ TEST_F(ExtractorTest, TestDefaultHeaderLocation) {
   EXPECT_FALSE(tokens[0]->isIssuerAllowed("issuer3"));
   EXPECT_FALSE(tokens[0]->isIssuerAllowed("issuer4"));
   EXPECT_FALSE(tokens[0]->isIssuerAllowed("issuer5"));
+  EXPECT_FALSE(tokens[0]->isIssuerAllowed("issuer6"));
+  EXPECT_FALSE(tokens[0]->isIssuerAllowed("issuer7"));
+  EXPECT_FALSE(tokens[0]->isIssuerAllowed("issuer8"));
+  EXPECT_FALSE(tokens[0]->isIssuerAllowed("issuer9"));
+  EXPECT_FALSE(tokens[0]->isIssuerAllowed("issuer10"));
   EXPECT_FALSE(tokens[0]->isIssuerAllowed("unknown_issuer"));
 
   // Test token remove
@@ -127,6 +140,24 @@ TEST_F(ExtractorTest, TestDefaultHeaderLocationWithValidJWT) {
 
   // Only the issue1 is using default header location.
   EXPECT_EQ(tokens[0]->token(), GoodToken);
+  EXPECT_TRUE(tokens[0]->isIssuerAllowed("issuer1"));
+}
+
+// Test extracting JWT as Bearer token from the default header location: "Authorization" -
+// using an actual (correctly-formatted) JWT but token is invalid, like: GoodToken +
+// chars_after_space expected to get all token include characters after the space:
+TEST_F(ExtractorTest, TestDefaultHeaderLocationWithValidJWTEndedWithSpaceAndMoreCharachters) {
+  std::string chars_after_space = "jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj";
+  std::string concatenated = std::string(GoodToken) + " ." + chars_after_space;
+  const char* valid_token_with_space_and_chars = concatenated.c_str();
+
+  auto headers = TestRequestHeaderMapImpl{
+      {absl::StrCat("Authorization"), absl::StrCat("Bearer ", valid_token_with_space_and_chars)}};
+  auto tokens = extractor_->extract(headers);
+  EXPECT_EQ(tokens.size(), 1);
+
+  // Only the issue1 is using default header location.
+  EXPECT_EQ(tokens[0]->token(), valid_token_with_space_and_chars);
   EXPECT_TRUE(tokens[0]->isIssuerAllowed("issuer1"));
 }
 
@@ -218,7 +249,7 @@ TEST_F(ExtractorTest, TestPrefixHeaderFlexibleMatch1) {
 
   // Match issuer 7 with map key as: prefix-header + 'CCCDDD'
   EXPECT_TRUE(tokens[0]->isIssuerAllowed("issuer7"));
-  EXPECT_EQ(tokens[0]->token(), "jwt_token");
+  EXPECT_EQ(tokens[0]->token(), "jwt_token,extra=more");
 }
 
 TEST_F(ExtractorTest, TestPrefixHeaderFlexibleMatch2) {
@@ -229,7 +260,7 @@ TEST_F(ExtractorTest, TestPrefixHeaderFlexibleMatch2) {
 
   // Match issuer 7 with map key as: prefix-header + AAA
   EXPECT_TRUE(tokens[0]->isIssuerAllowed("issuer7"));
-  EXPECT_EQ(tokens[0]->token(), "and0X3Rva2Vu");
+  EXPECT_EQ(tokens[0]->token(), "and0X3Rva2Vu\",comment=\"fish tag\"");
 }
 
 TEST_F(ExtractorTest, TestPrefixHeaderFlexibleMatch3) {
@@ -240,11 +271,11 @@ TEST_F(ExtractorTest, TestPrefixHeaderFlexibleMatch3) {
 
   // Match issuer 8 with map key as: prefix-header + '"CCCDDD"'
   EXPECT_TRUE(tokens[0]->isIssuerAllowed("issuer8"));
-  EXPECT_EQ(tokens[0]->token(), "and0X3Rva2Vu");
+  EXPECT_EQ(tokens[0]->token(), "and0X3Rva2Vu\"}");
 
   // Match issuer 7 with map key as: prefix-header + 'CCCDDD'
   EXPECT_TRUE(tokens[1]->isIssuerAllowed("issuer7"));
-  EXPECT_EQ(tokens[1]->token(), "and0X3Rva2Vu");
+  EXPECT_EQ(tokens[1]->token(), "and0X3Rva2Vu\"}");
 }
 
 // Test extracting token from the custom query parameter: "token_param"
@@ -264,6 +295,53 @@ TEST_F(ExtractorTest, TestCustomParamToken) {
   EXPECT_FALSE(tokens[0]->isIssuerAllowed("unknown_issuer"));
 
   tokens[0]->removeJwt(headers);
+}
+
+// Test extracting token from a cookie
+TEST_F(ExtractorTest, TestCookieToken) {
+  auto headers = TestRequestHeaderMapImpl{
+      {"cookie", "token-cookie=token-cookie-value; token-cookie-2=token-cookie-value-2"},
+      {"cookie", "token-cookie-3=\"token-cookie-value-3\""}};
+  auto tokens = extractor_->extract(headers);
+  EXPECT_EQ(tokens.size(), 3);
+
+  // only issuer9 has specified "token-cookie" cookie location.
+  EXPECT_EQ(tokens[0]->token(), "token-cookie-value");
+  EXPECT_TRUE(tokens[0]->isIssuerAllowed("issuer9"));
+  EXPECT_FALSE(tokens[0]->isIssuerAllowed("issuer10"));
+  tokens[0]->removeJwt(headers);
+
+  // only issuer9 has specified "token-cookie-2" cookie location.
+  EXPECT_EQ(tokens[1]->token(), "token-cookie-value-2");
+  EXPECT_TRUE(tokens[1]->isIssuerAllowed("issuer9"));
+  EXPECT_FALSE(tokens[1]->isIssuerAllowed("issuer10"));
+  tokens[1]->removeJwt(headers);
+
+  // only issuer10 has specified "token-cookie-3" cookie location.
+  EXPECT_EQ(tokens[2]->token(), "token-cookie-value-3");
+  EXPECT_TRUE(tokens[2]->isIssuerAllowed("issuer10"));
+  EXPECT_FALSE(tokens[2]->isIssuerAllowed("issuer9"));
+  tokens[2]->removeJwt(headers);
+}
+
+// Test extracting token from a cookie, but not from default location
+TEST_F(ExtractorTest, TestCookieTokenAndDefault) {
+  setUp(R"(
+providers:
+  provider11:
+    issuer: issuer11
+    from_cookies:
+      - token-cookie
+)");
+  // Headers has token in both cookie and default location.
+  auto headers = TestRequestHeaderMapImpl{{"Authorization", "Bearer jwt_token"},
+                                          {"cookie", "token-cookie=\"token-cookie-value\""}};
+  // token from the default location is not extracted
+  auto tokens = extractor_->extract(headers);
+  EXPECT_EQ(tokens.size(), 1);
+
+  EXPECT_EQ(tokens[0]->token(), "token-cookie-value");
+  EXPECT_TRUE(tokens[0]->isIssuerAllowed("issuer11"));
 }
 
 // Test extracting multiple tokens.

@@ -18,10 +18,10 @@
 #include "envoy/stats/scope.h"
 #include "envoy/thread_local/thread_local.h"
 
-#include "common/common/logger.h"
-#include "common/config/subscription_base.h"
-#include "common/init/target_impl.h"
-#include "common/protobuf/utility.h"
+#include "source/common/common/logger.h"
+#include "source/common/config/subscription_base.h"
+#include "source/common/init/target_impl.h"
+#include "source/common/protobuf/utility.h"
 
 #include "absl/container/node_hash_set.h"
 
@@ -41,10 +41,8 @@ class VhdsSubscription : Envoy::Config::SubscriptionBase<envoy::config::route::v
 public:
   VhdsSubscription(RouteConfigUpdatePtr& config_update_info,
                    Server::Configuration::ServerFactoryContext& factory_context,
-                   const std::string& stat_prefix,
-                   absl::optional<RouteConfigProvider*>& route_config_providers,
-                   const envoy::config::core::v3::ApiVersion resource_api_version =
-                       envoy::config::core::v3::ApiVersion::AUTO);
+                   const std::string& stat_prefix, Rds::RouteConfigProvider* route_config_provider);
+
   ~VhdsSubscription() override { init_target_.ready(); }
 
   void registerInitTargetWithInitManager(Init::Manager& m) { m.add(init_target_); }
@@ -60,21 +58,22 @@ public:
 
 private:
   // Config::SubscriptionCallbacks
-  void onConfigUpdate(const std::vector<Envoy::Config::DecodedResourceRef>&,
-                      const std::string&) override {
-    NOT_IMPLEMENTED_GCOVR_EXCL_LINE;
+  absl::Status onConfigUpdate(const std::vector<Envoy::Config::DecodedResourceRef>&,
+                              const std::string&) override {
+    return absl::OkStatus();
   }
-  void onConfigUpdate(const std::vector<Envoy::Config::DecodedResourceRef>&,
-                      const Protobuf::RepeatedPtrField<std::string>&, const std::string&) override;
+  absl::Status onConfigUpdate(const std::vector<Envoy::Config::DecodedResourceRef>&,
+                              const Protobuf::RepeatedPtrField<std::string>&,
+                              const std::string&) override;
   void onConfigUpdateFailed(Envoy::Config::ConfigUpdateFailureReason reason,
                             const EnvoyException* e) override;
 
   RouteConfigUpdatePtr& config_update_info_;
-  Stats::ScopePtr scope_;
+  Stats::ScopeSharedPtr scope_;
   VhdsStats stats_;
   Envoy::Config::SubscriptionPtr subscription_;
   Init::TargetImpl init_target_;
-  absl::optional<RouteConfigProvider*>& route_config_provider_opt_;
+  Rds::RouteConfigProvider* route_config_provider_;
 };
 
 using VhdsSubscriptionPtr = std::unique_ptr<VhdsSubscription>;

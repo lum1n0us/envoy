@@ -9,12 +9,11 @@
 #include "envoy/network/address.h"
 #include "envoy/network/io_handle.h"
 
-#include "common/buffer/watermark_buffer.h"
-#include "common/common/logger.h"
-#include "common/network/io_socket_error_impl.h"
-
-#include "extensions/io_socket/user_space/file_event_impl.h"
-#include "extensions/io_socket/user_space/io_handle.h"
+#include "source/common/buffer/watermark_buffer.h"
+#include "source/common/common/logger.h"
+#include "source/common/network/io_socket_error_impl.h"
+#include "source/extensions/io_socket/user_space/file_event_impl.h"
+#include "source/extensions/io_socket/user_space/io_handle.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -89,6 +88,8 @@ public:
 
   Api::SysCallIntResult shutdown(int how) override;
   absl::optional<std::chrono::milliseconds> lastRoundTripTime() override { return absl::nullopt; }
+  absl::optional<uint64_t> congestionWindowInBytes() const override { return absl::nullopt; }
+  absl::optional<std::string> interfaceName() override { return absl::nullopt; }
 
   void setWatermarks(uint32_t watermark) { pending_received_data_.setWatermarks(watermark); }
   void onBelowLowWatermark() {
@@ -144,11 +145,15 @@ public:
     ASSERT(!peer_handle_);
     ASSERT(!write_shutdown_);
     peer_handle_ = writable_peer;
+    ENVOY_LOG(trace, "io handle {} set peer handle to {}.", static_cast<void*>(this),
+              static_cast<void*>(writable_peer));
   }
+
+  PassthroughStateSharedPtr passthroughState() override { return passthrough_state_; }
 
 private:
   friend class IoHandleFactory;
-  IoHandleImpl();
+  explicit IoHandleImpl(PassthroughStateSharedPtr passthrough_state = nullptr);
 
   static const Network::Address::InstanceConstSharedPtr& getCommonInternalAddress();
 
@@ -172,13 +177,45 @@ private:
 
   // The flag whether the peer is valid. Any write attempt must check this flag.
   bool write_shutdown_{false};
+
+  // Shared state between peer handles.
+  PassthroughStateSharedPtr passthrough_state_{nullptr};
+};
+
+class PassthroughStateImpl : public PassthroughState, public Logger::Loggable<Logger::Id::io> {
+public:
+  void initialize(std::unique_ptr<envoy::config::core::v3::Metadata> metadata,
+                  const StreamInfo::FilterState::Objects& filter_state_objects) override;
+  void mergeInto(envoy::config::core::v3::Metadata& metadata,
+                 StreamInfo::FilterState& filter_state) override;
+
+private:
+  enum class State { Created, Initialized, Done };
+  State state_{State::Created};
+  std::unique_ptr<envoy::config::core::v3::Metadata> metadata_;
+  StreamInfo::FilterState::Objects filter_state_objects_;
 };
 
 using IoHandleImplPtr = std::unique_ptr<IoHandleImpl>;
 class IoHandleFactory {
 public:
   static std::pair<IoHandleImplPtr, IoHandleImplPtr> createIoHandlePair() {
-    auto p = std::pair<IoHandleImplPtr, IoHandleImplPtr>{new IoHandleImpl(), new IoHandleImpl()};
+    auto state = std::make_shared<PassthroughStateImpl>();
+    auto p = std::pair<IoHandleImplPtr, IoHandleImplPtr>{new IoHandleImpl(state),
+                                                         new IoHandleImpl(state)};
+    p.first->setPeerHandle(p.second.get());
+    p.second->setPeerHandle(p.first.get());
+    return p;
+  }
+  static std::pair<IoHandleImplPtr, IoHandleImplPtr>
+  createBufferLimitedIoHandlePair(uint32_t buffer_size) {
+    auto state = std::make_shared<PassthroughStateImpl>();
+    auto p = std::pair<IoHandleImplPtr, IoHandleImplPtr>{new IoHandleImpl(state),
+                                                         new IoHandleImpl(state)};
+    // This buffer watermark setting emulates the OS socket buffer parameter
+    // `/proc/sys/net/ipv4/tcp_{r,w}mem`.
+    p.first->setWatermarks(buffer_size);
+    p.second->setWatermarks(buffer_size);
     p.first->setPeerHandle(p.second.get());
     p.second->setPeerHandle(p.first.get());
     return p;

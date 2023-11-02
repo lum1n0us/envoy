@@ -1,8 +1,7 @@
-#include "common/buffer/buffer_impl.h"
-#include "common/stats/isolated_store_impl.h"
-
-#include "extensions/compression/brotli/compressor/config.h"
-#include "extensions/compression/brotli/decompressor/brotli_decompressor_impl.h"
+#include "source/common/buffer/buffer_impl.h"
+#include "source/common/stats/isolated_store_impl.h"
+#include "source/extensions/compression/brotli/compressor/config.h"
+#include "source/extensions/compression/brotli/decompressor/brotli_decompressor_impl.h"
 
 #include "test/mocks/server/factory_context.h"
 #include "test/test_common/utility.h"
@@ -39,8 +38,8 @@ protected:
     drainBuffer(buffer);
 
     Stats::IsolatedStoreImpl stats_store{};
-    Compression::Brotli::Decompressor::BrotliDecompressorImpl decompressor{stats_store, "test.",
-                                                                           4096, false};
+    Compression::Brotli::Decompressor::BrotliDecompressorImpl decompressor{*stats_store.rootScope(),
+                                                                           "test.", 4096, false};
 
     decompressor.decompress(accumulation_buffer, buffer);
     std::string decompressed_text{buffer.toString()};

@@ -7,26 +7,27 @@
 #include "envoy/extensions/transport_sockets/tls/v3/cert.pb.h"
 #include "envoy/stats/scope.h"
 
-#include "common/api/api_impl.h"
-#include "common/event/dispatcher_impl.h"
-#include "common/grpc/async_client_impl.h"
-#include "common/grpc/context_impl.h"
-#include "common/http/context_impl.h"
+#include "source/common/api/api_impl.h"
+#include "source/common/event/dispatcher_impl.h"
+#include "source/common/grpc/async_client_impl.h"
+#include "source/common/grpc/context_impl.h"
+#include "source/common/http/context_impl.h"
 
 #ifdef ENVOY_GOOGLE_GRPC
-#include "common/grpc/google_async_client_impl.h"
+#include "source/common/grpc/google_async_client_impl.h"
 #endif
 
-#include "common/http/async_client_impl.h"
-#include "common/http/codes.h"
-#include "common/http/http2/conn_pool.h"
-#include "common/network/connection_impl.h"
-#include "common/network/raw_buffer_socket.h"
-#include "common/router/context_impl.h"
-#include "common/stats/symbol_table_impl.h"
+#include "source/common/http/async_client_impl.h"
+#include "source/common/http/codes.h"
+#include "source/common/http/http2/conn_pool.h"
+#include "source/common/network/connection_impl.h"
+#include "source/common/network/raw_buffer_socket.h"
+#include "source/common/router/context_impl.h"
+#include "source/common/router/upstream_codec_filter.h"
+#include "source/common/stats/symbol_table.h"
 
-#include "extensions/transport_sockets/tls/context_config_impl.h"
-#include "extensions/transport_sockets/tls/ssl_socket.h"
+#include "source/extensions/transport_sockets/tls/context_config_impl.h"
+#include "source/extensions/transport_sockets/tls/ssl_socket.h"
 
 #include "test/common/grpc/grpc_client_integration.h"
 #include "test/common/grpc/utility.h"
@@ -47,10 +48,13 @@
 
 using testing::_;
 using testing::AtLeast;
+using testing::AtMost;
 using testing::Eq;
 using testing::Invoke;
 using testing::InvokeWithoutArgs;
+using testing::IsEmpty;
 using testing::NiceMock;
+using testing::Not;
 using testing::Return;
 using testing::ReturnRef;
 
@@ -101,21 +105,32 @@ public:
   Event::Dispatcher& dispatcher_;
 };
 
+struct RequestArgs {
+  helloworld::HelloRequest* request = nullptr;
+  bool end_stream = false;
+};
+
 // Stream related test utilities.
 class HelloworldStream : public MockAsyncStreamCallbacks<helloworld::HelloReply> {
 public:
   HelloworldStream(DispatcherHelper& dispatcher_helper) : dispatcher_helper_(dispatcher_helper) {}
 
-  void sendRequest(bool end_stream = false) {
+  void sendRequest(RequestArgs request_args = {}) {
     helloworld::HelloRequest request_msg;
     request_msg.set_name(HELLO_REQUEST);
-    grpc_stream_->sendMessage(request_msg, end_stream);
+    // Update the request pointer to local request message when it is not set at caller site (i.e.,
+    // nullptr).
+    if (request_args.request == nullptr) {
+      request_args.request = &request_msg;
+    }
+
+    grpc_stream_->sendMessage(*request_args.request, request_args.end_stream);
 
     helloworld::HelloRequest received_msg;
     AssertionResult result =
         fake_stream_->waitForGrpcMessage(dispatcher_helper_.dispatcher_, received_msg);
     RELEASE_ASSERT(result, result.message());
-    EXPECT_THAT(request_msg, ProtoEq(received_msg));
+    EXPECT_THAT(*request_args.request, ProtoEq(received_msg));
   }
 
   void expectInitialMetadata(const TestMetadata& metadata) {
@@ -148,13 +163,33 @@ public:
       reply_headers->addReference(value.first, value.second);
     }
     expectInitialMetadata(metadata);
+    fake_stream_->startGrpcStream(false);
     fake_stream_->encodeHeaders(Http::TestResponseHeaderMapImpl(*reply_headers), false);
   }
 
-  void sendReply() {
+  // `check_response_size` only could be set to true in Envoy gRPC because bytes metering is only
+  // implemented in Envoy gPRC mode.
+  void sendReply(bool check_response_size = false) {
     helloworld::HelloReply reply;
     reply.set_message(HELLO_REPLY);
-    EXPECT_CALL(*this, onReceiveMessage_(HelloworldReplyEq(HELLO_REPLY))).WillExitIfNeeded();
+    EXPECT_CALL(*this, onReceiveMessage_(HelloworldReplyEq(HELLO_REPLY)))
+        .WillOnce(Invoke([this, check_response_size](const helloworld::HelloReply& reply_msg) {
+          if (check_response_size) {
+            auto recv_buf = Common::serializeMessage(reply_msg);
+            // gRPC message in Envoy gRPC mode is prepended with a frame header.
+            Common::prependGrpcFrameHeader(*recv_buf);
+            // Verify that the number of received byte that is tracked in the stream info equals to
+            // the length of reply response buffer.
+            auto upstream_meter = this->grpc_stream_->streamInfo().getUpstreamBytesMeter();
+            uint64_t total_bytes_rev = upstream_meter->wireBytesReceived();
+            uint64_t header_bytes_rev = upstream_meter->headerBytesReceived();
+            // In HTTP2 codec, H2_FRAME_HEADER_SIZE is always included in bytes meter so we need to
+            // account for it in the check here as well.
+            EXPECT_EQ(total_bytes_rev - header_bytes_rev,
+                      recv_buf->length() + Http::Http2::H2_FRAME_HEADER_SIZE);
+          }
+          dispatcher_helper_.exitDispatcherIfNeeded();
+        }));
     dispatcher_helper_.setStreamEventPending();
     fake_stream_->sendGrpcMessage<helloworld::HelloReply>(reply);
   }
@@ -239,15 +274,14 @@ class GrpcClientIntegrationTest : public GrpcClientIntegrationParamTest {
 public:
   GrpcClientIntegrationTest()
       : method_descriptor_(helloworld::Greeter::descriptor()->FindMethodByName("SayHello")),
-        api_(Api::createApiForTest(*stats_store_, test_time_.timeSystem())),
+        api_(Api::createApiForTest(stats_store_, test_time_.timeSystem())),
         dispatcher_(api_->allocateDispatcher("test_thread")),
-        http_context_(stats_store_->symbolTable()), router_context_(stats_store_->symbolTable()) {}
+        http_context_(stats_store_.symbolTable()), router_context_(stats_store_.symbolTable()) {}
 
   virtual void initialize() {
     if (fake_upstream_ == nullptr) {
-      FakeUpstreamConfig config(test_time_.timeSystem());
-      config.upstream_protocol_ = FakeHttpConnection::Type::HTTP2;
-      fake_upstream_ = std::make_unique<FakeUpstream>(0, ipVersion(), config);
+      fake_upstream_config_.upstream_protocol_ = Http::CodecType::HTTP2;
+      fake_upstream_ = std::make_unique<FakeUpstream>(0, ipVersion(), fake_upstream_config_);
     }
     switch (clientType()) {
     case ClientType::EnvoyGrpc:
@@ -290,7 +324,7 @@ public:
   RawAsyncClientPtr createAsyncClientImpl() {
     client_connection_ = std::make_unique<Network::ClientConnectionImpl>(
         *dispatcher_, fake_upstream_->localAddress(), nullptr,
-        std::move(async_client_transport_socket_), nullptr);
+        std::move(async_client_transport_socket_), nullptr, nullptr);
     ON_CALL(*cm_.thread_local_cluster_.cluster_.info_, connectTimeout())
         .WillByDefault(Return(std::chrono::milliseconds(10000)));
     cm_.initializeThreadLocalClusters({"fake_cluster"});
@@ -305,9 +339,9 @@ public:
                                                     Upstream::ResourcePriority::Default, nullptr,
                                                     nullptr, state_);
     EXPECT_CALL(cm_.thread_local_cluster_, httpConnPool(_, _, _))
-        .WillRepeatedly(Return(http_conn_pool_.get()));
+        .WillRepeatedly(Return(Upstream::HttpPoolData([]() {}, http_conn_pool_.get())));
     http_async_client_ = std::make_unique<Http::AsyncClientImpl>(
-        cm_.thread_local_cluster_.cluster_.info_, *stats_store_, *dispatcher_, local_info_, cm_,
+        cm_.thread_local_cluster_.cluster_.info_, stats_store_, *dispatcher_, local_info_, cm_,
         runtime_, random_, std::move(shadow_writer_ptr_), http_context_, router_context_);
     EXPECT_CALL(cm_.thread_local_cluster_, httpAsyncClient())
         .WillRepeatedly(ReturnRef(*http_async_client_));
@@ -338,7 +372,7 @@ public:
                                                    stats_scope_, createGoogleGrpcConfig(), *api_,
                                                    google_grpc_stat_names_);
 #else
-    NOT_REACHED_GCOVR_EXCL_LINE;
+    PANIC("reached unexpected code");
 #endif
   }
 
@@ -372,13 +406,16 @@ public:
     request_msg.set_name(HELLO_REQUEST);
 
     Tracing::MockSpan active_span;
-    EXPECT_CALL(active_span, spawnChild_(_, "async fake_cluster egress", _))
+    EXPECT_CALL(active_span, spawnChild_(_, "async helloworld.Greeter.SayHello egress", _))
         .WillOnce(Return(request->child_span_));
     EXPECT_CALL(*request->child_span_,
                 setTag(Eq(Tracing::Tags::get().UpstreamCluster), Eq("fake_cluster")));
     EXPECT_CALL(*request->child_span_,
+                setTag(Eq(Tracing::Tags::get().UpstreamAddress), Not(IsEmpty())))
+        .Times(AtMost(1));
+    EXPECT_CALL(*request->child_span_,
                 setTag(Eq(Tracing::Tags::get().Component), Eq(Tracing::Tags::get().Proxy)));
-    EXPECT_CALL(*request->child_span_, injectContext(_));
+    EXPECT_CALL(*request->child_span_, injectContext(_, _));
 
     request->grpc_request_ = grpc_client_->send(*method_descriptor_, request_msg, *request,
                                                 active_span, Http::AsyncClient::RequestOptions());
@@ -415,8 +452,11 @@ public:
           }
         }));
 
-    stream->grpc_stream_ =
-        grpc_client_->start(*method_descriptor_, *stream, Http::AsyncClient::StreamOptions());
+    auto options = Http::AsyncClient::StreamOptions();
+    envoy::config::core::v3::Metadata m;
+    (*m.mutable_filter_metadata())["com.foo.bar"] = {};
+    options.setMetadata(m);
+    stream->grpc_stream_ = grpc_client_->start(*method_descriptor_, *stream, options);
     EXPECT_NE(stream->grpc_stream_, nullptr);
 
     if (!fake_connection_) {
@@ -437,17 +477,18 @@ public:
   }
 
   DangerousDeprecatedTestTime test_time_;
+  FakeUpstreamConfig fake_upstream_config_{test_time_.timeSystem()};
   std::unique_ptr<FakeUpstream> fake_upstream_;
   FakeHttpConnectionPtr fake_connection_;
   std::vector<FakeStreamPtr> fake_streams_;
   const Protobuf::MethodDescriptor* method_descriptor_;
   Stats::TestUtil::TestSymbolTable symbol_table_;
-  Stats::IsolatedStoreImpl* stats_store_ = new Stats::IsolatedStoreImpl(*symbol_table_);
+  Stats::IsolatedStoreImpl stats_store_{*symbol_table_};
   Api::ApiPtr api_;
   Event::DispatcherPtr dispatcher_;
   DispatcherHelper dispatcher_helper_{*dispatcher_};
-  Stats::ScopeSharedPtr stats_scope_{stats_store_};
-  Grpc::StatNames google_grpc_stat_names_{stats_store_->symbolTable()};
+  Stats::ScopeSharedPtr stats_scope_{stats_store_.rootScope()};
+  Grpc::StatNames google_grpc_stat_names_{stats_store_.symbolTable()};
   TestMetadata service_wide_initial_metadata_;
   std::unique_ptr<Http::TestRequestHeaderMapImpl> stream_headers_;
   std::vector<std::pair<std::string, std::string>> channel_args_;
@@ -485,7 +526,7 @@ public:
 class GrpcSslClientIntegrationTest : public GrpcClientIntegrationTest {
 public:
   GrpcSslClientIntegrationTest() {
-    ON_CALL(factory_context_, api()).WillByDefault(ReturnRef(*api_));
+    ON_CALL(factory_context_.server_context_, api()).WillByDefault(ReturnRef(*api_));
   }
   void TearDown() override {
     // Reset some state in the superclass before we destruct context_manager_ in our destructor, it
@@ -520,18 +561,18 @@ public:
 
     mock_host_description_->socket_factory_ =
         std::make_unique<Extensions::TransportSockets::Tls::ClientSslSocketFactory>(
-            std::move(cfg), context_manager_, *stats_store_);
+            std::move(cfg), context_manager_, *stats_store_.rootScope());
     async_client_transport_socket_ =
-        mock_host_description_->socket_factory_->createTransportSocket(nullptr);
+        mock_host_description_->socket_factory_->createTransportSocket(nullptr, nullptr);
     FakeUpstreamConfig config(test_time_.timeSystem());
-    config.upstream_protocol_ = FakeHttpConnection::Type::HTTP2;
+    config.upstream_protocol_ = Http::CodecType::HTTP2;
     fake_upstream_ =
         std::make_unique<FakeUpstream>(createUpstreamSslContext(), 0, ipVersion(), config);
 
     GrpcClientIntegrationTest::initialize();
   }
 
-  Network::TransportSocketFactoryPtr createUpstreamSslContext() {
+  Network::DownstreamTransportSocketFactoryPtr createUpstreamSslContext() {
     envoy::extensions::transport_sockets::tls::v3::DownstreamTlsContext tls_context;
     auto* common_tls_context = tls_context.mutable_common_tls_context();
     common_tls_context->add_alpn_protocols(Http::Utility::AlpnNames::get().Http2);
@@ -550,9 +591,10 @@ public:
     auto cfg = std::make_unique<Extensions::TransportSockets::Tls::ServerContextConfigImpl>(
         tls_context, factory_context_);
 
-    static Stats::Scope* upstream_stats_store = new Stats::IsolatedStoreImpl();
+    static auto* upstream_stats_store = new Stats::IsolatedStoreImpl();
     return std::make_unique<Extensions::TransportSockets::Tls::ServerSslSocketFactory>(
-        std::move(cfg), context_manager_, *upstream_stats_store, std::vector<std::string>{});
+        std::move(cfg), context_manager_, *upstream_stats_store->rootScope(),
+        std::vector<std::string>{});
   }
 
   bool use_client_cert_{};

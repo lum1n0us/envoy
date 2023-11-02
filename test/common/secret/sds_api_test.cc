@@ -6,11 +6,11 @@
 #include "envoy/service/discovery/v3/discovery.pb.h"
 #include "envoy/service/secret/v3/sds.pb.h"
 
-#include "common/config/datasource.h"
-#include "common/config/filesystem_subscription_impl.h"
-#include "common/secret/sds_api.h"
-#include "common/ssl/certificate_validation_context_config_impl.h"
-#include "common/ssl/tls_certificate_config_impl.h"
+#include "source/common/config/datasource.h"
+#include "source/common/secret/sds_api.h"
+#include "source/common/ssl/certificate_validation_context_config_impl.h"
+#include "source/common/ssl/tls_certificate_config_impl.h"
+#include "source/extensions/config_subscription/filesystem/filesystem_subscription_impl.h"
 
 #include "test/common/stats/stat_test_utility.h"
 #include "test/mocks/config/mocks.h"
@@ -20,6 +20,7 @@
 #include "test/mocks/init/mocks.h"
 #include "test/mocks/protobuf/mocks.h"
 #include "test/mocks/secret/mocks.h"
+#include "test/mocks/server/transport_socket_factory_context.h"
 #include "test/test_common/environment.h"
 #include "test/test_common/logging.h"
 #include "test/test_common/utility.h"
@@ -99,9 +100,10 @@ TEST_F(SdsApiTest, InitManagerInitialised) {
   const std::string sds_config_path = TestEnvironment::writeStringToFileForTest(
       "sds.yaml", TestEnvironment::substitute(sds_config), false);
   NiceMock<Config::MockSubscriptionCallbacks> callbacks;
-  TestUtility::TestOpaqueResourceDecoderImpl<envoy::extensions::transport_sockets::tls::v3::Secret>
-      resource_decoder("name");
-  Config::SubscriptionStats stats(Config::Utility::generateStats(stats_));
+  Config::OpaqueResourceDecoderSharedPtr resource_decoder(
+      std::make_shared<TestUtility::TestOpaqueResourceDecoderImpl<
+          envoy::extensions::transport_sockets::tls::v3::Secret>>("name"));
+  Config::SubscriptionStats stats(Config::Utility::generateStats(*stats_.rootScope()));
   NiceMock<ProtobufMessage::MockValidationVisitor> validation_visitor;
   envoy::config::core::v3::ConfigSource config_source;
 
@@ -109,11 +111,11 @@ TEST_F(SdsApiTest, InitManagerInitialised) {
       .WillOnce(Invoke([this, &sds_config_path, &resource_decoder,
                         &stats](const envoy::config::core::v3::ConfigSource&, absl::string_view,
                                 Stats::Scope&, Config::SubscriptionCallbacks& cbs,
-                                Config::OpaqueResourceDecoder&,
+                                Config::OpaqueResourceDecoderSharedPtr,
                                 const Config::SubscriptionOptions&) -> Config::SubscriptionPtr {
-        return std::make_unique<Config::FilesystemSubscriptionImpl>(*dispatcher_, sds_config_path,
-                                                                    cbs, resource_decoder, stats,
-                                                                    validation_visitor_, *api_);
+        return std::make_unique<Config::FilesystemSubscriptionImpl>(
+            *dispatcher_, Config::makePathConfigSource(sds_config_path), cbs, resource_decoder,
+            stats, validation_visitor_, *api_);
       }));
 
   auto init_manager = Init::ManagerImpl("testing");
@@ -174,9 +176,10 @@ TEST_F(SdsApiTest, DynamicTlsCertificateUpdateSuccess) {
   const auto decoded_resources = TestUtility::decodeResources({typed_secret});
 
   EXPECT_CALL(secret_callback, onAddOrUpdateSecret());
-  subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, "");
+  EXPECT_TRUE(subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, "").ok());
 
-  Ssl::TlsCertificateConfigImpl tls_config(*sds_api.secret(), nullptr, *api_);
+  testing::NiceMock<Server::Configuration::MockTransportSocketFactoryContext> ctx;
+  Ssl::TlsCertificateConfigImpl tls_config(*sds_api.secret(), ctx, *api_);
   const std::string cert_pem =
       "{{ test_rundir }}/test/extensions/transport_sockets/tls/test_data/selfsigned_cert.pem";
   EXPECT_EQ(TestEnvironment::readFileToStringForTest(TestEnvironment::substitute(cert_pem)),
@@ -194,9 +197,10 @@ protected:
     api_ = Api::createApiForTest(filesystem_);
     setupMocks();
     EXPECT_CALL(filesystem_, splitPathFromFilename(_))
-        .WillRepeatedly(Invoke([](absl::string_view path) -> Filesystem::PathSplitResult {
-          return Filesystem::fileSystemForTest().splitPathFromFilename(path);
-        }));
+        .WillRepeatedly(
+            Invoke([](absl::string_view path) -> absl::StatusOr<Filesystem::PathSplitResult> {
+              return Filesystem::fileSystemForTest().splitPathFromFilename(path);
+            }));
   }
 
   Secret::MockSecretCallbacks secret_callback_;
@@ -262,7 +266,8 @@ protected:
                 watch_cbs_.push_back(cb);
               }));
     }
-    subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, "");
+    EXPECT_TRUE(
+        subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, "").ok());
   }
 
   const bool watched_directory_;
@@ -290,6 +295,7 @@ protected:
   }
 
   void onConfigUpdate(const std::string& trusted_ca_path, const std::string& trusted_ca_value,
+                      const std::string& crl_path, const std::string& crl_value,
                       const std::string& watch_path) {
     const std::string yaml = fmt::format(
         R"EOF(
@@ -297,22 +303,30 @@ protected:
   validation_context:
     trusted_ca:
       filename: "{}"
+    crl:
+      filename: "{}"
     allow_expired_certificate: true
     )EOF",
-        trusted_ca_path);
+        trusted_ca_path, crl_path);
     envoy::extensions::transport_sockets::tls::v3::Secret typed_secret;
     TestUtility::loadFromYaml(yaml, typed_secret);
     const auto decoded_resources = TestUtility::decodeResources({typed_secret});
 
     auto* watcher = new Filesystem::MockWatcher();
     EXPECT_CALL(filesystem_, fileReadToEnd(trusted_ca_path)).WillOnce(Return(trusted_ca_value));
+    EXPECT_CALL(filesystem_, fileReadToEnd(crl_path)).WillOnce(Return(crl_value));
     EXPECT_CALL(secret_callback_, onAddOrUpdateSecret());
     EXPECT_CALL(mock_dispatcher_, createFilesystemWatcher_()).WillOnce(Return(watcher));
     EXPECT_CALL(*watcher, addWatch(watch_path, Filesystem::Watcher::Events::MovedTo, _))
         .WillOnce(Invoke([this](absl::string_view, uint32_t, Filesystem::Watcher::OnChangedCb cb) {
           watch_cbs_.push_back(cb);
         }));
-    subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, "");
+    EXPECT_CALL(*watcher, addWatch(watch_path, Filesystem::Watcher::Events::MovedTo, _))
+        .WillOnce(Invoke([this](absl::string_view, uint32_t, Filesystem::Watcher::OnChangedCb cb) {
+          watch_cbs_.push_back(cb);
+        }));
+    EXPECT_TRUE(
+        subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, "").ok());
   }
 
   std::unique_ptr<CertificateValidationContextSdsApi> sds_api_;
@@ -414,15 +428,19 @@ TEST_P(TlsCertificateSdsRotationApiTest, FailedRotation) {
 // Basic rotation of CertificateValidationContext.
 TEST_P(CertificateValidationContextSdsRotationApiTest, CertificateValidationContext) {
   InSequence s;
-  onConfigUpdate("/foo/bar/ca.pem", "a", "/foo/bar/");
+  onConfigUpdate("/foo/bar/ca.pem", "a", "/foo/bar/crl.pem", "b", "/foo/bar/");
 
   EXPECT_CALL(filesystem_, fileReadToEnd("/foo/bar/ca.pem")).WillOnce(Return("c"));
+  EXPECT_CALL(filesystem_, fileReadToEnd("/foo/bar/crl.pem")).WillOnce(Return("d"));
   EXPECT_CALL(filesystem_, fileReadToEnd("/foo/bar/ca.pem")).WillOnce(Return("c"));
+  EXPECT_CALL(filesystem_, fileReadToEnd("/foo/bar/crl.pem")).WillOnce(Return("d"));
+
   EXPECT_CALL(secret_callback_, onAddOrUpdateSecret());
   watch_cbs_[0](Filesystem::Watcher::Events::MovedTo);
 
   const auto& secret = *sds_api_->secret();
   EXPECT_EQ("c", secret.trusted_ca().inline_bytes());
+  EXPECT_EQ("d", secret.crl().inline_bytes());
 }
 
 // Hash consistency verification prevents races.
@@ -498,12 +516,12 @@ public:
     init_manager.add(init_target_);
   }
 
-  MOCK_METHOD(void, onConfigUpdate,
+  MOCK_METHOD(absl::Status, onConfigUpdate,
               (const std::vector<Config::DecodedResourceRef>&, const std::string&));
-  void onConfigUpdate(const std::vector<Config::DecodedResourceRef>& added,
-                      const Protobuf::RepeatedPtrField<std::string>& removed,
-                      const std::string& version) override {
-    SdsApi::onConfigUpdate(added, removed, version);
+  absl::Status onConfigUpdate(const std::vector<Config::DecodedResourceRef>& added,
+                              const Protobuf::RepeatedPtrField<std::string>& removed,
+                              const std::string& version) override {
+    return SdsApi::onConfigUpdate(added, removed, version);
   }
   void setSecret(const envoy::extensions::transport_sockets::tls::v3::Secret&) override {}
   void validateConfig(const envoy::extensions::transport_sockets::tls::v3::Secret&) override {}
@@ -528,7 +546,7 @@ TEST_F(SdsApiTest, Delta) {
                      *dispatcher_, *api_);
   initialize();
   EXPECT_CALL(sds, onConfigUpdate(DecodedResourcesEq(resources), "version1"));
-  subscription_factory_.callbacks_->onConfigUpdate(resources, {}, "ignored");
+  EXPECT_TRUE(subscription_factory_.callbacks_->onConfigUpdate(resources, {}, "ignored").ok());
 
   // An attempt to remove a resource logs an error, but otherwise just carries on (ignoring the
   // removal attempt).
@@ -539,7 +557,8 @@ TEST_F(SdsApiTest, Delta) {
   EXPECT_CALL(sds, onConfigUpdate(DecodedResourcesEq(resources_v2), "version2"));
   Protobuf::RepeatedPtrField<std::string> removals;
   *removals.Add() = "route_0";
-  subscription_factory_.callbacks_->onConfigUpdate(resources_v2, removals, "ignored");
+  EXPECT_TRUE(
+      subscription_factory_.callbacks_->onConfigUpdate(resources_v2, removals, "ignored").ok());
 }
 
 // Tests SDS's use of the delta variant of onConfigUpdate().
@@ -570,9 +589,11 @@ TEST_F(SdsApiTest, DeltaUpdateSuccess) {
 
   EXPECT_CALL(secret_callback, onAddOrUpdateSecret());
   initialize();
-  subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, {}, "");
+  EXPECT_TRUE(
+      subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, {}, "").ok());
 
-  Ssl::TlsCertificateConfigImpl tls_config(*sds_api.secret(), nullptr, *api_);
+  testing::NiceMock<Server::Configuration::MockTransportSocketFactoryContext> ctx;
+  Ssl::TlsCertificateConfigImpl tls_config(*sds_api.secret(), ctx, *api_);
   const std::string cert_pem =
       "{{ test_rundir }}/test/extensions/transport_sockets/tls/test_data/selfsigned_cert.pem";
   EXPECT_EQ(TestEnvironment::readFileToStringForTest(TestEnvironment::substitute(cert_pem)),
@@ -611,13 +632,14 @@ TEST_F(SdsApiTest, DynamicCertificateValidationContextUpdateSuccess) {
   const auto decoded_resources = TestUtility::decodeResources({typed_secret});
   EXPECT_CALL(secret_callback, onAddOrUpdateSecret());
   initialize();
-  subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, "");
+  EXPECT_TRUE(subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, "").ok());
 
-  Ssl::CertificateValidationContextConfigImpl cvc_config(*sds_api.secret(), *api_);
+  auto cvc_config =
+      Ssl::CertificateValidationContextConfigImpl::create(*sds_api.secret(), *api_).value();
   const std::string ca_cert =
       "{{ test_rundir }}/test/extensions/transport_sockets/tls/test_data/ca_cert.pem";
   EXPECT_EQ(TestEnvironment::readFileToStringForTest(TestEnvironment::substitute(ca_cert)),
-            cvc_config.caCert());
+            cvc_config->caCert());
 }
 
 class CvcValidationCallback {
@@ -662,7 +684,10 @@ TEST_F(SdsApiTest, DefaultCertificateValidationContextTest) {
   dynamic_cvc->set_allow_expired_certificate(false);
   dynamic_cvc->mutable_trusted_ca()->set_filename(TestEnvironment::substitute(
       "{{ test_rundir }}/test/extensions/transport_sockets/tls/test_data/ca_cert.pem"));
-  dynamic_cvc->add_match_subject_alt_names()->set_exact("second san");
+  auto* san_matcher = dynamic_cvc->add_match_typed_subject_alt_names();
+  san_matcher->mutable_matcher()->set_exact("second san");
+  san_matcher->set_san_type(
+      envoy::extensions::transport_sockets::tls::v3::SubjectAltNameMatcher::DNS);
   const std::string dynamic_verify_certificate_spki =
       "QGJRPdmx/r5EGOFLb2MTiZp2isyC0Whht7iazhzXaCM=";
   dynamic_cvc->add_verify_certificate_spki(dynamic_verify_certificate_spki);
@@ -671,39 +696,46 @@ TEST_F(SdsApiTest, DefaultCertificateValidationContextTest) {
 
   const auto decoded_resources = TestUtility::decodeResources({typed_secret});
   initialize();
-  subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, "");
+  EXPECT_TRUE(subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, "").ok());
 
   const std::string default_verify_certificate_hash =
       "0000000000000000000000000000000000000000000000000000000000000000";
   envoy::extensions::transport_sockets::tls::v3::CertificateValidationContext default_cvc;
   default_cvc.set_allow_expired_certificate(true);
   default_cvc.mutable_trusted_ca()->set_inline_bytes("fake trusted ca");
-  default_cvc.add_match_subject_alt_names()->set_exact("first san");
+  san_matcher = default_cvc.add_match_typed_subject_alt_names();
+  san_matcher->mutable_matcher()->set_exact("first san");
+  san_matcher->set_san_type(
+      envoy::extensions::transport_sockets::tls::v3::SubjectAltNameMatcher::DNS);
   default_cvc.add_verify_certificate_hash(default_verify_certificate_hash);
   envoy::extensions::transport_sockets::tls::v3::CertificateValidationContext merged_cvc =
       default_cvc;
   merged_cvc.MergeFrom(*sds_api.secret());
-  Ssl::CertificateValidationContextConfigImpl cvc_config(merged_cvc, *api_);
+  auto cvc_config = Ssl::CertificateValidationContextConfigImpl::create(merged_cvc, *api_).value();
   // Verify that merging CertificateValidationContext applies logical OR to bool
   // field.
-  EXPECT_TRUE(cvc_config.allowExpiredCertificate());
+  EXPECT_TRUE(cvc_config->allowExpiredCertificate());
   // Verify that singular fields are overwritten.
   const std::string ca_cert =
       "{{ test_rundir }}/test/extensions/transport_sockets/tls/test_data/ca_cert.pem";
   EXPECT_EQ(TestEnvironment::readFileToStringForTest(TestEnvironment::substitute(ca_cert)),
-            cvc_config.caCert());
+            cvc_config->caCert());
   // Verify that repeated fields are concatenated.
-  EXPECT_EQ(2, cvc_config.subjectAltNameMatchers().size());
-  EXPECT_EQ("first san", cvc_config.subjectAltNameMatchers()[0].exact());
-  EXPECT_EQ("second san", cvc_config.subjectAltNameMatchers()[1].exact());
+  EXPECT_EQ(2, cvc_config->subjectAltNameMatchers().size());
+  EXPECT_EQ("first san", cvc_config->subjectAltNameMatchers()[0].matcher().exact());
+  EXPECT_EQ(envoy::extensions::transport_sockets::tls::v3::SubjectAltNameMatcher::DNS,
+            cvc_config->subjectAltNameMatchers()[0].san_type());
+  EXPECT_EQ("second san", cvc_config->subjectAltNameMatchers()[1].matcher().exact());
+  EXPECT_EQ(envoy::extensions::transport_sockets::tls::v3::SubjectAltNameMatcher::DNS,
+            cvc_config->subjectAltNameMatchers()[1].san_type());
   // Verify that if dynamic CertificateValidationContext does not set certificate hash list, the new
   // secret contains hash list from default CertificateValidationContext.
-  EXPECT_EQ(1, cvc_config.verifyCertificateHashList().size());
-  EXPECT_EQ(default_verify_certificate_hash, cvc_config.verifyCertificateHashList()[0]);
+  EXPECT_EQ(1, cvc_config->verifyCertificateHashList().size());
+  EXPECT_EQ(default_verify_certificate_hash, cvc_config->verifyCertificateHashList()[0]);
   // Verify that if default CertificateValidationContext does not set certificate SPKI list, the new
   // secret contains SPKI list from dynamic CertificateValidationContext.
-  EXPECT_EQ(1, cvc_config.verifyCertificateSpkiList().size());
-  EXPECT_EQ(dynamic_verify_certificate_spki, cvc_config.verifyCertificateSpkiList()[0]);
+  EXPECT_EQ(1, cvc_config->verifyCertificateSpkiList().size());
+  EXPECT_EQ(dynamic_verify_certificate_spki, cvc_config->verifyCertificateSpkiList()[0]);
 }
 
 class GenericSecretValidationCallback {
@@ -754,7 +786,7 @@ generic_secret:
   EXPECT_CALL(secret_callback, onAddOrUpdateSecret());
   EXPECT_CALL(validation_callback, validateGenericSecret(_));
   initialize();
-  subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, "");
+  EXPECT_TRUE(subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, "").ok());
 
   const envoy::extensions::transport_sockets::tls::v3::GenericSecret generic_secret(
       *sds_api.secret());
@@ -774,9 +806,8 @@ TEST_F(SdsApiTest, EmptyResource) {
   init_manager_.add(*sds_api.initTarget());
 
   initialize();
-  EXPECT_THROW_WITH_MESSAGE(subscription_factory_.callbacks_->onConfigUpdate({}, ""),
-                            EnvoyException,
-                            "Missing SDS resources for abc.com in onConfigUpdate()");
+  EXPECT_EQ(subscription_factory_.callbacks_->onConfigUpdate({}, "").message(),
+            "Missing SDS resources for abc.com in onConfigUpdate()");
 }
 
 // Validate that SdsApi throws exception if multiple secrets are passed to onConfigUpdate().
@@ -803,9 +834,13 @@ TEST_F(SdsApiTest, SecretUpdateWrongSize) {
   const auto decoded_resources = TestUtility::decodeResources({typed_secret, typed_secret});
 
   initialize();
-  EXPECT_THROW_WITH_MESSAGE(
-      subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, ""),
-      EnvoyException, "Unexpected SDS secrets length: 2");
+  EXPECT_EQ(
+      subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, "").message(),
+      "Unexpected SDS secrets length: 2");
+  Protobuf::RepeatedPtrField<std::string> unused;
+  EXPECT_EQ(subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, unused, "")
+                .message(),
+            "Unexpected SDS secrets length: 2");
 }
 
 // Validate that SdsApi throws exception if secret name passed to onConfigUpdate()
@@ -833,9 +868,9 @@ TEST_F(SdsApiTest, SecretUpdateWrongSecretName) {
   const auto decoded_resources = TestUtility::decodeResources({typed_secret});
 
   initialize();
-  EXPECT_THROW_WITH_MESSAGE(
-      subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, ""),
-      EnvoyException, "Unexpected SDS secret (expecting abc.com): wrong.name.com");
+  EXPECT_EQ(
+      subscription_factory_.callbacks_->onConfigUpdate(decoded_resources.refvec_, "").message(),
+      "Unexpected SDS secret (expecting abc.com): wrong.name.com");
 }
 
 } // namespace

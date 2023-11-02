@@ -3,7 +3,7 @@
 Wasm Network Filter
 ===================
 
-* :ref:`v3 API reference <envoy_v3_api_msg_extensions.filters.network.rbac.v3.RBAC>`
+* :ref:`v3 API reference <envoy_v3_api_msg_extensions.filters.network.wasm.v3.Wasm>`
 
 .. attention::
 
@@ -27,7 +27,6 @@ Example filter configuration:
       config:
         name: "my_plugin"
         vm_config:
-          runtime: "envoy.wasm.runtime.v8"
           code:
             local:
               filename: "/etc/envoy_filter_http_wasm_example.wasm"

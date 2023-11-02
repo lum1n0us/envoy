@@ -1,18 +1,22 @@
-#include "server/config_validation/cluster_manager.h"
+#include "source/server/config_validation/cluster_manager.h"
 
 #include "envoy/config/bootstrap/v3/bootstrap.pb.h"
 #include "envoy/config/core/v3/config_source.pb.h"
 
-#include "common/common/utility.h"
+#include "source/common/common/utility.h"
 
 namespace Envoy {
 namespace Upstream {
 
 ClusterManagerPtr ValidationClusterManagerFactory::clusterManagerFromProto(
     const envoy::config::bootstrap::v3::Bootstrap& bootstrap) {
-  return std::make_unique<ValidationClusterManager>(
-      bootstrap, *this, stats_, tls_, runtime_, local_info_, log_manager_, main_thread_dispatcher_,
-      admin_, validation_context_, api_, http_context_, grpc_context_, router_context_);
+  auto cluster_manager = std::unique_ptr<ValidationClusterManager>{new ValidationClusterManager(
+      bootstrap, *this, stats_, tls_, context_.runtime(), context_.localInfo(),
+      context_.accessLogManager(), context_.mainThreadDispatcher(), context_.admin(),
+      context_.messageValidationContext(), context_.api(), http_context_, context_.grpcContext(),
+      context_.routerContext(), server_)};
+  cluster_manager->init(bootstrap);
+  return cluster_manager;
 }
 
 CdsApiPtr ValidationClusterManagerFactory::createCds(

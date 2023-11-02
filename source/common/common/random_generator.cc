@@ -1,6 +1,6 @@
-#include "common/common/random_generator.h"
+#include "source/common/common/random_generator.h"
 
-#include "common/common/assert.h"
+#include "source/common/common/assert.h"
 
 #include "openssl/rand.h"
 
@@ -128,7 +128,7 @@ std::string RandomGeneratorImpl::uuid() {
     uuid[2 * i + 5] = hex[d & 0x0f];
   }
 
-  return std::string(uuid, UUID_LENGTH);
+  return {uuid, UUID_LENGTH};
 }
 
 } // namespace Random
