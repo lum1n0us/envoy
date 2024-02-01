@@ -73,7 +73,7 @@ jobs:
             --config=ios \
             --config=mobile-remote-ci-macos \
             //examples/swift/hello_world:app
-    - uses: nick-fields/retry@943e742917ac94714d2f408a0e8320f2d1fcafcd
+    - uses: nick-fields/retry@7152eba30c6575329ac0576536151aca5a72780e
       name: 'Start simulator'
       with:
         timeout_minutes: 5
@@ -122,7 +122,7 @@ jobs:
             --config=ios \
             --config=mobile-remote-ci-macos \
             //test/swift/apps/baseline:app
-    - uses: nick-fields/retry@943e742917ac94714d2f408a0e8320f2d1fcafcd
+    - uses: nick-fields/retry@7152eba30c6575329ac0576536151aca5a72780e
       name: 'Start simulator'
       with:
         timeout_minutes: 5
@@ -172,7 +172,7 @@ jobs:
             --config=mobile-remote-ci-macos \
             --define=admin_functionality=enabled \
             //test/swift/apps/experimental:app
-    - uses: nick-fields/retry@943e742917ac94714d2f408a0e8320f2d1fcafcd
+    - uses: nick-fields/retry@7152eba30c6575329ac0576536151aca5a72780e
       name: 'Start simulator'
       with:
         timeout_minutes: 5
@@ -222,7 +222,7 @@ jobs:
             --config=ios \
             --config=mobile-remote-ci-macos \
             //examples/swift/async_await:app
-    - uses: nick-fields/retry@943e742917ac94714d2f408a0e8320f2d1fcafcd
+    - uses: nick-fields/retry@7152eba30c6575329ac0576536151aca5a72780e
       name: 'Start simulator'
       with:
         timeout_minutes: 5
@@ -287,7 +287,7 @@ jobs:
             --config=ios \
             --config=mobile-remote-ci-macos \
             //examples/objective-c/hello_world:app
-    - uses: nick-fields/retry@943e742917ac94714d2f408a0e8320f2d1fcafcd
+    - uses: nick-fields/retry@7152eba30c6575329ac0576536151aca5a72780e
       name: 'Start simulator'
       with:
         timeout_minutes: 5
